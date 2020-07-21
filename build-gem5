@@ -33,15 +33,11 @@ Build and run all the gem5 unit tests instead of the gem5 executable.
 https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-tests
 '''
         )
-        self.add_argument(
-            'extra_scons_args',
-            metavar='extra-scons-args',
-            nargs='*',
-        )
+        self._add_argument('extra_make_args')
 
     def build(self):
         build_dir = self.get_build_dir()
-        binaries_dir = os.path.join(self.env['gem5_system_dir'], 'binaries')
+        binaries_dir = self.env['gem5_system_binaries_dir']
         disks_dir = os.path.join(self.env['gem5_system_dir'], 'disks')
         os.makedirs(binaries_dir, exist_ok=True)
         os.makedirs(disks_dir, exist_ok=True)
@@ -61,18 +57,7 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
             verbose = ['--verbose', LF]
         else:
             verbose = []
-        if self.env['arch'] == 'x86_64':
-            dummy_img_path = os.path.join(disks_dir, 'linux-bigswap2.img')
-            with open(dummy_img_path, 'wb') as dummy_img_file:
-                zeroes = b'\x00' * (2 ** 16)
-                for i in range(2 ** 10):
-                    dummy_img_file.write(zeroes)
-            self.sh.run_cmd(['mkswap', dummy_img_path, LF])
-            with open(os.path.join(binaries_dir, 'x86_64-vmlinux-2.6.22.9'), 'w'):
-                # This file must always be present, despite --kernel overriding that default and selecting the kernel.
-                # I'm not even joking. No one has ever built x86 gem5 without the magic dist dir present.
-                pass
-        elif self.env['arch'] == 'arm' or self.env['arch'] == 'aarch64':
+        if self.env['is_arm']:
             gem5_system_source_dir = os.path.join(self.env['gem5_source_dir'], 'system')
 
             # dtb
@@ -86,7 +71,8 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
             )
 
             # Bootloader 32.
-            bootloader32_dir = os.path.join(gem5_system_source_dir, 'arm', 'simple_bootloader')
+            arm_bootloader_dir = os.path.join(gem5_system_source_dir, 'arm', 'bootloader')
+            bootloader32_dir = os.path.join(arm_bootloader_dir, 'arm')
             # TODO use the buildroot cross compiler here, and remove the dependencies from configure.
             self.sh.run_cmd([
                 'make', LF,
@@ -94,14 +80,14 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
                 'CROSS_COMPILE=arm-linux-gnueabihf-', LF,
             ])
             # bootloader
-            self.sh.cp(os.path.join(bootloader32_dir, 'boot_emm.arm'), binaries_dir)
+            self.sh.cp(os.path.join(bootloader32_dir, 'boot.arm'), binaries_dir)
 
             # Bootloader 64.
-            bootloader64_dir = os.path.join(gem5_system_source_dir, 'arm', 'aarch64_bootloader')
+            bootloader64_dir = os.path.join(arm_bootloader_dir, 'arm64')
             # TODO cross_compile is ignored because the make does not use CC...
             self.sh.run_cmd(['make', '-C', bootloader64_dir, LF])
-            self.sh.cp(os.path.join(bootloader64_dir, 'boot_emm.arm64'), binaries_dir)
-            self.sh.cp(os.path.join(bootloader64_dir, 'boot_emm_v2.arm64'), binaries_dir)
+            self.sh.cp(os.path.join(bootloader64_dir, 'boot.arm64'), binaries_dir)
+            self.sh.cp(os.path.join(bootloader64_dir, 'boot_v2.arm64'), binaries_dir)
         term_source_dir = os.path.join(self.env['gem5_source_dir'], 'util/term')
         m5term_build = os.path.join(term_source_dir, 'm5term')
         self.sh.run_cmd(['make', '-C', term_source_dir, LF])
@@ -125,26 +111,37 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
             gold_linker_cmd = []
         else:
             extra_env = {}
-            gold_linker_cmd = ['--gold-linker', LF,]
+            if self.env['gem5_build_type'] == 'debug':
+                # A debug build is pointless if I can't... debug!
+                # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/109
+                gold_linker_cmd = []
+            else:
+                gold_linker_cmd = ['--gold-linker', LF]
+        kwargs = {}
+        if self.env['ccache']:
+            kwargs['extra_paths'] = [self.env['ccache_dir']]
         exit_status = self.sh.run_cmd(
             (
                 [
                     'scons', LF,
                     '-j', str(self.env['nproc']), LF,
                     '--ignore-style', LF,
+                    'USE_HDF5=1', LF,
                 ] +
                 gold_linker_cmd +
                 verbose +
                 [
-                    'SLICC_HTML=True', LF,
+                    # TODO reenable, broken, had enough of this.
+                    # https://gem5.atlassian.net/browse/GEM5-357
+                    #'SLICC_HTML=True', LF,
                 ] +
                 self.sh.add_newlines(targets) +
-                self.sh.add_newlines(self.env['extra_scons_args'])
+                self.sh.add_newlines(self.env['extra_make_args'])
             ),
             cwd=self.env['gem5_source_dir'],
-            extra_paths=[self.env['ccache_dir']],
             extra_env=extra_env,
             raise_on_failure = False,
+            **kwargs
         )
         return exit_status
 

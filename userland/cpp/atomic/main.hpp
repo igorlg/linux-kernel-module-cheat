@@ -8,8 +8,6 @@
 #include <thread>
 #include <vector>
 
-size_t niters;
-
 #if LKMC_USERLAND_ATOMIC_STD_ATOMIC
 std::atomic_ulong global(0);
 #else
@@ -20,7 +18,7 @@ uint64_t global = 0;
 std::mutex mutex;
 #endif
 
-void threadMain() {
+void threadMain(size_t niters) {
     for (size_t i = 0; i < niters; ++i) {
 #if LKMC_USERLAND_ATOMIC_MUTEX
         mutex.lock();
@@ -30,7 +28,7 @@ void threadMain() {
             "incq %0;"
             : "+g" (global),
               "+g" (i) // to prevent loop unrolling, and make results more comparable across methods,
-                       // see also: https://cirosantilli.com/linux-kernel-module-cheat#infinite-busy-loop
+                       // see also: https://cirosantilli.com/linux-kernel-module-cheat#c-busy-loop
             :
             :
         );
@@ -51,11 +49,28 @@ void threadMain() {
             :
             :
         );
+#elif LKMC_USERLAND_ATOMIC_LDAXR_STLXR
+        // Was used by std::atomic before LDADD was added
+        uint64_t scratch64;
+        uint64_t scratch32;
+        __asm__ __volatile__ (
+            "1:"
+            "ldaxr %[scratch64], [%[addr]];"
+            "add   %[scratch64], %[scratch64], 1;"
+            "stlxr %w[scratch32], %[scratch64], [%[addr]];"
+            "cbnz  %w[scratch32], 1b;"
+            : "=m" (global), // indicate that global is modified
+              "+g" (i), // to prevent loop unrolling
+              [scratch64] "=&r" (scratch64),
+              [scratch32] "=&r" (scratch32)
+            : [addr] "r" (&global)
+            :
+        );
 #elif LKMC_USERLAND_ATOMIC_AARCH64_LDADD
         // https://cirosantilli.com/linux-kernel-module-cheat#arm-lse
         __asm__ __volatile__ (
             "ldadd %[inc], xzr, [%[addr]];"
-            : "=m" (global),
+            : "=m" (global), // indicate that global is modified
               "+g" (i) // to prevent loop unrolling
             : [inc] "r" (1),
               [addr] "r" (&global)
@@ -80,7 +95,7 @@ void threadMain() {
 
 int main(int argc, char **argv) {
 #if __cplusplus >= 201103L
-    size_t nthreads;
+    size_t niters, nthreads;
     if (argc > 1) {
         nthreads = std::stoull(argv[1], NULL, 0);
     } else {
@@ -93,13 +108,13 @@ int main(int argc, char **argv) {
     }
     std::vector<std::thread> threads(nthreads);
     for (size_t i = 0; i < nthreads; ++i)
-        threads[i] = std::thread(threadMain);
+        threads[i] = std::thread(threadMain, niters);
     for (size_t i = 0; i < nthreads; ++i)
         threads[i].join();
     uint64_t expect = nthreads * niters;
 #if LKMC_USERLAND_ATOMIC_FAIL || \
     LKMC_USERLAND_ATOMIC_X86_64_INC || \
-    LKMC_USERLAND_ATOMIC_AARCH64_INC
+    LKMC_USERLAND_ATOMIC_AARCH64_ADD
     // These fail, so we just print the outcomes.
     std::cout << "expect " << expect << std::endl;
     std::cout << "global " << global << std::endl;

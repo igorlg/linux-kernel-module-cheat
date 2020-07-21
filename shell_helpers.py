@@ -35,7 +35,7 @@ class ShellHelpers:
 
     _print_lock = threading.Lock()
 
-    def __init__(self, dry_run=False, quiet=False):
+    def __init__(self, dry_run=False, quiet=False, force_oneline=False):
         '''
         :param dry_run: don't run the commands, just potentially print them. Debug aid.
         :type dry_run: Bool
@@ -44,6 +44,7 @@ class ShellHelpers:
         :type dry_run: Bool
         '''
         self.dry_run = dry_run
+        self.force_oneline_default = force_oneline
         self.quiet = quiet
 
     @classmethod
@@ -108,13 +109,19 @@ class ShellHelpers:
             new_mode = old_mode & ~mode_delta
         os.chmod(path, new_mode)
 
-    @staticmethod
+    def force_oneline(self, force_oneline):
+        if force_oneline is not None:
+            return force_oneline
+        else:
+            return self.force_oneline_default
+
     def cmd_to_string(
+        self,
         cmd: List[Union[str, LF]],
         cwd=None,
         extra_env=None,
         extra_paths=None,
-        force_oneline: bool =False,
+        force_oneline: Union[bool,None] =None,
         *,
         stdin_path: Union[str,None] =None
     ):
@@ -133,22 +140,24 @@ class ShellHelpers:
         out = []
         if extra_env is None:
             extra_env = {}
+        preffix_arr = []
         if cwd is not None:
-            out.append('cd {} &&'.format(shlex.quote(cwd)))
+            preffix_arr.append('cd {} &&'.format(shlex.quote(cwd)))
+        extra_env2 = extra_env.copy()
         if extra_paths is not None:
-            out.append('PATH="{}:${{PATH}}"'.format(':'.join(extra_paths)))
-        for key in extra_env:
-            out.append('{}={}'.format(shlex.quote(key), shlex.quote(extra_env[key])))
+            extra_env2['PATH'] = '{}:"${{PATH}}"'.format(shlex.quote(':'.join(extra_paths)))
+        for key in extra_env2:
+            preffix_arr.append('{}={}'.format(shlex.quote(key), shlex.quote(extra_env2[key])))
         cmd_quote = []
         newline_count = 0
         for arg in cmd:
             if arg == LF:
-                if not force_oneline:
+                if not self.force_oneline(force_oneline):
                     cmd_quote.append(arg)
                     newline_count += 1
             else:
                 cmd_quote.append(shlex.quote(arg))
-        if force_oneline or newline_count > 0:
+        if self.force_oneline(force_oneline) or newline_count > 0:
             cmd_quote = [
                 ' '.join(list(y))
                 for x, y in itertools.groupby(
@@ -157,10 +166,14 @@ class ShellHelpers:
                 )
                 if not x
             ]
+        if self.force_oneline(force_oneline):
+            cmd_quote = [' '.join(preffix_arr + cmd_quote)]
+        else:
+            cmd_quote = preffix_arr + cmd_quote
         out.extend(cmd_quote)
         if stdin_path is not None:
             out.append('< {}'.format(shlex.quote(stdin_path)))
-        if force_oneline or newline_count == 1 and cmd[-1] == LF:
+        if self.force_oneline(force_oneline) or newline_count == 1 and cmd[-1] == LF:
             ending = ''
         else:
             ending = last_newline + ';'
@@ -216,7 +229,8 @@ class ShellHelpers:
                 )
 
     def cp(self, src, dest, **kwargs):
-        self.print_cmd(['cp', src, dest])
+        if not kwargs.get('quiet', False):
+            self.print_cmd(['cp', src, dest])
         if not self.dry_run:
             if os.path.islink(src):
                 if os.path.lexists(dest):
@@ -242,9 +256,10 @@ class ShellHelpers:
         cmd,
         cwd=None,
         cmd_file=None,
+        cmd_files=None,
         extra_env=None,
         extra_paths=None,
-        force_oneline=False,
+        force_oneline: Union[bool,None] =None,
         *,
         stdin_path: Union[str,None] =None
     ):
@@ -267,7 +282,11 @@ class ShellHelpers:
             )
         if not self.quiet:
             self._print_thread_safe('+ ' + cmd_string)
+        if cmd_files is None:
+            cmd_files = []
         if cmd_file is not None:
+            cmd_files.append(cmd_file)
+        for cmd_file in cmd_files:
             os.makedirs(os.path.dirname(cmd_file), exist_ok=True)
             with open(cmd_file, 'w') as f:
                 f.write('#!/usr/bin/env bash\n')
@@ -286,6 +305,7 @@ class ShellHelpers:
         self,
         cmd,
         cmd_file=None,
+        cmd_files=None,
         out_file=None,
         show_stdout=True,
         show_cmd=True,
@@ -308,6 +328,10 @@ class ShellHelpers:
 
         :param cmd_file: if not None, write the command to be run to that file
         :type cmd_file: str
+
+        :param cmd_files: if not None, write the command to be run to all files in this list
+                          cmd_file gets appended to that list if given.
+        :type cmd_files: List[str]
 
         :param out_file: if not None, write the stdout and stderr of the command the file
         :type out_file: str
@@ -357,6 +381,7 @@ class ShellHelpers:
                 cmd,
                 cwd=cwd,
                 cmd_file=cmd_file,
+                cmd_files=cmd_files,
                 extra_env=extra_env,
                 extra_paths=extra_paths,
                 stdin_path=stdin_path

@@ -1,4 +1,6 @@
-/* https://cirosantilli.com/linux-kernel-module-cheat#compilers */
+/* https://cirosantilli.com/linux-kernel-module-cheat#micro-benchmarks
+ * https://cirosantilli.com/linux-kernel-module-cheat#c-busy-loop
+ * https://cirosantilli.com/linux-kernel-module-cheat#benchmark-emulators-on-userland-executables */
 
 #include <stdlib.h>
 
@@ -6,9 +8,9 @@ void __attribute__ ((noinline)) busy_loop(
     unsigned long long max,
     unsigned long long max2
 ) {
-    for (unsigned i = 0; i < max; i++) {
-        for (unsigned j = 0; j < max2; j++) {
-            __asm__ __volatile__ ("" : "+g" (j), "+g" (j) : :);
+    for (unsigned long long i = 0; i < max2; i++) {
+        for (unsigned long long j = 0; j < max; j++) {
+            __asm__ __volatile__ ("" : "+g" (i), "+g" (j) : :);
         }
     }
 }

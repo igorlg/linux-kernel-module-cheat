@@ -30,6 +30,12 @@
 [submodule "submodules/linux"]
 	path = submodules/linux
 	url = https://github.com/cirosantilli/linux
+[submodule "submodules/lmbench"]
+	path = submodules/lmbench
+	url = https://github.com/cirosantilli/lmbench
+[submodule "submodules/omp-validation"]
+	path = submodules/omp-validation
+	url = https://github.com/cirosantilli/omp-validation
 [submodule "submodules/parsec-benchmark"]
 	path = submodules/parsec-benchmark
 	url = https://github.com/cirosantilli/parsec-benchmark

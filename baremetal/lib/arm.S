@@ -1,14 +1,14 @@
 #include <lkmc.h>
 
-.global lkmc_start
-lkmc_start:
+.global _start
+_start:
     /* Make all CPUs except CPU0 sleep by default. */
     mrc p15, 0, r0, c0, c0, 5
     ands r0, r0, 3
     bne lkmc_cpu_not_0
 
     /* Prepare the stack for main, mandatory for C code. */
-    ldr sp, =stack_top
+    ldr sp, =lkmc_stack_top
 
     /* Enable floating point.
      * Code copied from: http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.ddi0409h/CHDEGGFF.html
@@ -29,6 +29,17 @@ lkmc_start:
 
     /* Run main. */
     mov r0, 0
+
+#if 0
+    /* Just turn CLI args off for now since not supported.
+     * https://cirosantilli.com/linux-kernel-module-cheat#gem5-baremetal-arm-cli-args */
+    ldr r0, =lkmc_argc
+    ldr r0, [r0]
+    ldr r1, =lkmc_argv
+#else
+    /* Run main. */
+    mov r0, 0
+#endif
     bl main
 
     /* If main returns, exit. */

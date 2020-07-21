@@ -1,7 +1,7 @@
 #include <lkmc.h>
 
-.global lkmc_start
-lkmc_start:
+.global _start
+_start:
     /* Make all CPUs except CPU0 sleep by default. */
     mrs x0, mpidr_el1
     ands x0, x0, 3
@@ -20,15 +20,17 @@ lkmc_start:
     isb
 
     /* Prepare the stack for main, mandatory for C code. */
-    ldr x0, =stack_top
+    ldr x0, =lkmc_stack_top
     mov sp, x0
 
     /* https://cirosantilli.com/linux-kernel-module-cheat#magic-failure-string */
     adr x0, lkmc_baremetal_on_exit_callback
     bl on_exit
 
-    /* Run main. */
-    mov x0, 0
+    /* Setup CLI arguments and run main. */
+    ldr x0, =lkmc_argc
+    ldr x0, [x0]
+    ldr x1, =lkmc_argv
     bl main
 
     /* If main returns, exit. */

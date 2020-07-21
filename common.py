@@ -28,6 +28,11 @@ import urllib
 import urllib.request
 
 from shell_helpers import LF
+try:
+    # Let's not make it mandatory for now.
+    import china_dictatorship
+except ImportError:
+    pass
 import cli_function
 import path_properties
 import shell_helpers
@@ -38,7 +43,7 @@ common = sys.modules[__name__]
 # Fixed parameters that don't depend on CLI arguments.
 consts = {}
 consts['repo_short_id'] = 'lkmc'
-consts['linux_kernel_version'] = '5.2.1'
+consts['linux_kernel_version'] = '5.4.3'
 # https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
 consts['in_docker'] = os.path.exists('/.dockerenv')
 consts['root_dir'] = os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +72,8 @@ consts['userland_source_dir'] = os.path.join(consts['root_dir'], consts['userlan
 consts['userland_source_arch_dir'] = os.path.join(consts['userland_source_dir'], 'arch')
 consts['userland_executable_ext'] = '.out'
 consts['baremetal_executable_ext'] = '.elf'
+consts['baremetal_max_text_size'] = 0x1000000
+consts['baremetal_memory_size'] = 0x2000000
 consts['include_subdir'] = consts['repo_short_id']
 consts['include_source_dir'] = os.path.join(consts['root_dir'], consts['include_subdir'])
 consts['submodules_dir'] = os.path.join(consts['root_dir'], 'submodules')
@@ -150,6 +157,9 @@ consts['build_type_choices'] = [
     # -O0 -g
     'debug'
 ]
+consts['gem5_build_type_choices'] = consts['build_type_choices'] + [
+    'fast', 'prof', 'perf',
+]
 consts['build_type_default'] = 'opt'
 # Files whose basename start with this are gitignored.
 consts['tmp_prefix'] = 'tmp.'
@@ -220,6 +230,20 @@ Valid archs: {}
 '''.format(arches_string)
         )
         self.add_argument(
+            '--ccache',
+            default=True,
+            help='''\
+Enable or disable ccache: https://cirosantilli.com/linux-kernel-module-cheat#ccache
+'''
+        )
+        self.add_argument(
+            '--china',
+            default=False,
+            help='''\
+To have some fun when the kernel starts to beat you.
+'''
+        )
+        self.add_argument(
             '--dry-run',
             default=False,
             help='''\
@@ -229,6 +253,8 @@ We aim display every command that modifies the filesystem state, and generate
 Bash equivalents even for actions taken directly in Python without shelling out.
 
 mkdir are generally omitted since those are obvious
+
+See also: https://cirosantilli.com/linux-kernel-module-cheat#dry-run
 '''
         )
         self.add_argument(
@@ -333,7 +359,7 @@ Default: {}
         )
         self.add_argument(
             '--gem5-build-type',
-            choices=consts['build_type_choices'],
+            choices=consts['gem5_build_type_choices'],
             default=consts['build_type_default'],
             help='gem5 build type, most often used for "debug" builds.'
         )
@@ -375,6 +401,14 @@ Linux build ID. Allows you to keep multiple separate Linux builds.
 '''
         )
         self.add_argument(
+            '--linux-exec',
+            help='''\
+Use the given executable Linux kernel image. Ignored in userland and baremetal modes,
+Remember that different emulators may take different types of image, see:
+https://cirosantilli.com/linux-kernel-module-cheat#vmlinux-vs-bzimage-vs-zimage-vs-image
+''',
+        )
+        self.add_argument(
             '--linux-source-dir',
             help='''\
 Use the given directory as the Linux source tree.
@@ -401,6 +435,7 @@ See: https://cirosantilli.com/linux-kernel-module-cheat#initrd
         self.add_argument(
             '-b',
             '--baremetal',
+            action='append',
             help='''\
 Use the given baremetal executable instead of the Linux kernel.
 
@@ -496,7 +531,7 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-arm-platforms
             default=True,
             help='''\
 Copy userland build outputs to the overlay directory which will be put inside
-the image. If not given explicitly, this is disabled automatically when certain
+the disk image. If not given explicitly, this is disabled automatically when certain
 options are given, for example --static, since users don't usually want
 static executables to be placed in the final image, but rather only for
 user mode simulations in simulators that don't support dynamic linking like gem5.
@@ -520,7 +555,7 @@ be run in the guest.
 Place the output files of userland build outputs inside the image within this
 additional prefix. This is mostly useful to place different versions of binaries
 with different build parameters inside image to compare them. See:
-* https://cirosantilli.com/linux-kernel-module-cheat#update-the-toolchain
+* https://cirosantilli.com/linux-kernel-module-cheat#update-the-buildroot-toolchain
 * https://cirosantilli.com/linux-kernel-module-cheat#out_rootfs_overlay_dir
 '''
         )
@@ -541,6 +576,14 @@ are available.
 ''',
         )
         self.add_argument(
+            '--print-cmd-oneline',
+            action='store_true',
+            help='''\
+Print generated commands in a single line:
+https://cirosantilli.com/linux-kernel-module-cheat#dry-run
+'''
+        )
+        self.add_argument(
             '--static',
             default=False,
             help='''\
@@ -552,17 +595,22 @@ https://cirosantilli.com/linux-kernel-module-cheat#user-mode-static-executables
         self.add_argument(
             '-u',
             '--userland',
+            action='append',
             help='''\
 Run the given userland executable in user mode instead of booting the Linux kernel
 in full system mode. In gem5, user mode is called Syscall Emulation (SE) mode and
-uses se.py.
-Path resolution is similar to --baremetal.
+uses se.py. Path resolution is similar to --baremetal.
+* https://cirosantilli.com/linux-kernel-module-cheat#userland-setup-getting-started
+* https://cirosantilli.com/linux-kernel-module-cheat#gem5-syscall-emulation-mode
+This option may be given multiple times only in gem5 syscall emulation:
+https://cirosantilli.com/linux-kernel-module-cheat#gem5-syscall-emulation-multiple-executables
 '''
         )
         self.add_argument(
-            '--userland-args',
+            '--cli-args',
             help='''\
-CLI arguments to pass to the userland executable.
+CLI arguments used in both --userland mode simulation, and in --baremetal. See also:
+https://cirosantilli.com/linux-kernel-module-cheat#baremetal-command-line-arguments
 '''
         )
         self.add_argument(
@@ -740,7 +788,11 @@ Incompatible archs are skipped.
         # +
         # We doe this because QEMU does not add all possible Cortex Axx, there are
         # just too many, and gem5 does not allow selecting lower feature in general.
+        env['int_size'] = 4
         if env['arch'] == 'arm':
+            # TODO this shoud be 4. But that blows up running all gem5 arm 32-bit examples.
+            # https://cirosantilli.com/linux-kernel-module-cheat#gem5-baremetal-arm-cli-args
+            env['address_size'] = 8
             env['armv'] = 7
             env['buildroot_toolchain_prefix'] = 'arm-buildroot-linux-gnueabihf'
             env['crosstool_ng_toolchain_prefix'] = 'arm-unknown-eabi'
@@ -749,6 +801,7 @@ Incompatible archs are skipped.
             if not env['_args_given']['march']:
                 env['march'] = 'armv8-a'
         elif env['arch'] == 'aarch64':
+            env['address_size'] = 8
             env['armv'] = 8
             env['buildroot_toolchain_prefix'] = 'aarch64-buildroot-linux-gnu'
             env['crosstool_ng_toolchain_prefix'] = 'aarch64-unknown-elf'
@@ -757,6 +810,7 @@ Incompatible archs are skipped.
             if not env['_args_given']['march']:
                 env['march'] = 'armv8-a+lse'
         elif env['arch'] == 'x86_64':
+            env['address_size'] = 8
             env['crosstool_ng_toolchain_prefix'] = 'x86_64-unknown-elf'
             env['gem5_arch'] = 'X86'
             env['buildroot_toolchain_prefix'] = 'x86_64-buildroot-linux-gnu'
@@ -810,14 +864,14 @@ Incompatible archs are skipped.
         )
         env['qemu_img_basename'] = 'qemu-img'
         env['qemu_img_executable'] = join(env['qemu_build_dir'], env['qemu_img_basename'])
-        if env['userland'] is None:
+        if not env['userland']:
             env['qemu_executable_basename'] = 'qemu-system-{}'.format(env['arch'])
         else:
             env['qemu_executable_basename'] = 'qemu-{}'.format(env['arch'])
         if env['qemu_which'] == 'host':
             env['qemu_executable'] = env['qemu_executable_basename']
         else:
-            if env['userland'] is None:
+            if not env['userland']:
                 env['qemu_executable'] = join(
                     env['qemu_build_dir'],
                     '{}-softmmu'.format(env['arch']),
@@ -833,7 +887,7 @@ Incompatible archs are skipped.
         # gem5
         if not env['_args_given']['gem5_build_dir']:
             env['gem5_build_dir'] = join(env['gem5_out_dir'], env['gem5_build_id'])
-        env['gem5_fake_iso'] = join(env['gem5_out_dir'], 'fake.iso')
+        env['gem5_test_binaries_dir'] = join(env['gem5_out_dir'], 'test_binaries')
         env['gem5_m5term'] = join(env['gem5_build_dir'], 'm5term')
         env['gem5_build_build_dir'] = join(env['gem5_build_dir'], 'build')
         env['gem5_executable_dir'] = join(env['gem5_build_build_dir'], env['gem5_arch'])
@@ -841,6 +895,15 @@ Incompatible archs are skipped.
         env['gem5_executable'] = self.get_gem5_target_path(env, 'gem5')
         env['gem5_unit_test_target'] = self.get_gem5_target_path(env, 'unittests')
         env['gem5_system_dir'] = join(env['gem5_build_dir'], 'system')
+        env['gem5_system_binaries_dir'] = join(env['gem5_system_dir'], 'binaries')
+        if self.env['is_arm']:
+            if env['arch'] == 'arm':
+                gem5_bootloader_basename = 'boot.arm'
+            elif env['arch'] == 'aarch64':
+                gem5_bootloader_basename = 'boot.arm64'
+            env['gem5_bootloader'] = join(env['gem5_system_binaries_dir'], gem5_bootloader_basename)
+        else:
+            env['gem5_bootloader'] = None
 
         # gem5 source
         if env['_args_given']['gem5_source_dir']:
@@ -917,7 +980,8 @@ Incompatible archs are skipped.
             else:
                 env['guest_terminal_file'] = env['qemu_termout_file']
             env['trace_txt_file'] = env['qemu_trace_txt_file']
-        env['run_cmd_file'] = join(env['run_dir'], 'run.sh')
+        env['run_cmd_file_basename'] = 'run.sh'
+        env['run_cmd_file'] = join(env['run_dir'], env['run_cmd_file_basename'])
 
         # Linux kernel.
         if not env['_args_given']['linux_build_dir']:
@@ -965,12 +1029,17 @@ Incompatible archs are skipped.
         # Userland
         env['userland_source_arch_arch_dir'] = join(env['userland_source_arch_dir'], env['arch'])
         if env['in_tree']:
-            env['userland_build_dir'] = self.env['userland_source_dir']
+            env['userland_build_dir'] = env['userland_source_dir']
         else:
             env['userland_build_dir'] = join(env['out_dir'], 'userland', env['userland_build_id'], env['arch'])
         env['package'] = set(env['package'])
         if not env['_args_given']['copy_overlay']:
-            if self.env['in_tree'] or self.env['static'] or self.env['host']:
+            if (
+                env['in_tree'] or
+                env['static'] or
+                env['host'] or
+                env['mode'] == 'baremetal'
+            ):
                 env['copy_overlay'] = False
 
         # Kernel modules.
@@ -1000,23 +1069,44 @@ Incompatible archs are skipped.
         env['baremetal_syscalls_basename_noext'] = 'syscalls'
         env['baremetal_syscalls_src'] = os.path.join(
             env['baremetal_source_lib_dir'],
-            env['baremetal_syscalls_basename_noext'] + self.env['c_ext']
+            env['baremetal_syscalls_basename_noext'] + env['c_ext']
         )
         env['baremetal_syscalls_obj'] = os.path.join(
-            self.env['baremetal_build_lib_dir'],
-            env['baremetal_syscalls_basename_noext'] + self.env['obj_ext']
+            env['baremetal_build_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + env['obj_ext']
         )
         env['baremetal_syscalls_asm_src'] = os.path.join(
-            self.env['baremetal_source_lib_dir'],
-            env['baremetal_syscalls_basename_noext'] + '_asm' + self.env['asm_ext']
+            env['baremetal_source_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + '_asm' + env['asm_ext']
         )
         env['baremetal_syscalls_asm_obj'] = os.path.join(
-            self.env['baremetal_build_lib_dir'],
-            env['baremetal_syscalls_basename_noext'] + '_asm' + self.env['obj_ext']
+            env['baremetal_build_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + '_asm' + env['obj_ext']
+        )
+        if env['emulator'] == 'gem5':
+            if self.env['is_arm']:
+                if env['machine'] == 'VExpress_GEM5_V1':
+                    env['entry_address'] = 0x80000000
+                    env['uart_address'] = 0x1c090000
+                elif env['machine'] == 'RealViewPBX':
+                    env['entry_address'] = 0x10000
+                    env['uart_address'] = 0x10009000
+                else:
+                    raise Exception('unknown machine: ' + env['machine'])
+        else:
+            env['entry_address'] = 0x40000000
+            env['uart_address'] = 0x09000000
+        env['common_basename_noext'] = env['repo_short_id']
+        env['baremetal_extra_obj_bootloader'] = join(
+            env['baremetal_build_lib_dir'],
+            'bootloader{}'.format(env['obj_ext'])
+        )
+        env['baremetal_extra_obj_lkmc_common'] = join(
+            env['baremetal_build_lib_dir'],
+            env['common_basename_noext'] + env['obj_ext']
         )
 
         # Userland / baremetal common source.
-        env['common_basename_noext'] = env['repo_short_id']
         env['common_c'] = os.path.join(
             env['root_dir'],
             env['common_basename_noext'] + env['c_ext']
@@ -1027,8 +1117,38 @@ Incompatible archs are skipped.
         )
         if env['mode'] == 'baremetal':
             env['build_dir'] = env['baremetal_build_dir']
+            env['extra_objs'] = [
+                env['baremetal_extra_obj_bootloader'],
+                env['baremetal_extra_obj_lkmc_common'],
+                env['baremetal_syscalls_asm_obj'],
+                env['baremetal_syscalls_obj'],
+            ]
+            env['ccflags_default'] = [
+                '-nostartfiles', LF,
+            ]
+            if env['arch'] == 'arm':
+                env['ccflags_default'].extend([
+                    '-mhard-float', LF,
+                    # This uses the soft float ABI for calling functions from objets in Newlib which
+                    # our crosstool-NG config compiles with soft floats, while emiting hard float
+                    # from C and allowing us to use it from assembly, e.g. for the VMRS instruction:
+                    # which would otherwise fail "with selected processor does not support XXX in ARM mode"
+                    # Bibliography:
+                    # - https://stackoverflow.com/questions/9753749/arm-compilation-error-vfp-registered-used-by-executable-not-object-file
+                    # - https://stackoverflow.com/questions/41131432/cross-compiling-error-selected-processor-does-not-support-fmrx-r3-fpexc-in/41131782#41131782
+                    # - https://embeddedartistry.com/blog/2017/10/9/r1q7pksku2q3gww9rpqef0dnskphtc
+                    '-mfloat-abi=softfp', LF,
+                    '-mfpu=crypto-neon-fp-armv8', LF,
+                ])
+            env['ldflags'] = [
+                '-Wl,--section-start=.text={:#x}'.format(env['entry_address']), LF,
+                '-T', env['baremetal_link_script'], LF,
+            ]
         else:
             env['build_dir'] = env['userland_build_dir']
+            env['ccflags_default'] = []
+            env['extra_objs'] = []
+            env['ldflags'] = []
 
         # Docker
         env['docker_build_dir'] = join(env['out_dir'], 'docker', env['arch'])
@@ -1044,9 +1164,12 @@ Incompatible archs are skipped.
             env['qcow2_file'] = env['buildroot_qcow2_file']
 
         # Image
-        if env['baremetal'] is not None:
-            env['disk_image'] = env['gem5_fake_iso']
-            env['image'] = self.resolve_baremetal_executable(env['baremetal'])
+        if env['baremetal']:
+            env['image'] = self.resolve_baremetal_executable(env['baremetal'][0])
+            # This is needed because the Linux kerne limage for certain emulators like QEMU
+            # might not be in plain ELF format, but rather some crazy compressed kernel format.
+            # https://cirosantilli.com/linux-kernel-module-cheat#vmlinux-vs-bzimage-vs-zimage-vs-image
+            env['image_elf'] = env['image']
             source_path_noext = os.path.splitext(join(
                 env['root_dir'],
                 env['image'][len(env['baremetal_build_dir']) + 1:]
@@ -1057,8 +1180,9 @@ Incompatible archs are skipped.
                 if os.path.exists(source_path):
                     env['source_path'] = source_path
                     break
-        elif env['userland'] is not None:
-            env['image'] = self.resolve_userland_executable(env['userland'])
+        elif env['userland']:
+            env['image'] = self.resolve_userland_executable(env['userland'][0])
+            env['image_elf'] = env['image']
             source_path_noext = os.path.splitext(join(
                 env['userland_source_dir'],
                 env['image'][len(env['userland_build_dir']) + 1:]
@@ -1071,14 +1195,21 @@ Incompatible archs are skipped.
                     break
         else:
             if env['emulator'] == 'gem5':
-                env['image'] = env['vmlinux']
-                if env['ramfs']:
-                    env['disk_image'] = env['gem5_fake_iso']
-                else:
-                    env['disk_image'] = env['rootfs_raw_file']
+                if not env['_args_given']['linux_exec']:
+                    env['image'] = env['vmlinux']
             else:
-                env['image'] = env['linux_image']
-                env['disk_image'] = env['qcow2_file']
+                if not env['_args_given']['linux_exec']:
+                    env['image'] = env['linux_image']
+            env['image_elf'] = env['vmlinux']
+            if env['_args_given']['linux_exec']:
+                env['image'] = env['linux_exec']
+        if env['emulator'] == 'gem5':
+            if env['ramfs']:
+                env['disk_image'] = None
+            else:
+                env['disk_image'] = env['rootfs_raw_file']
+        else:
+            env['disk_image'] = env['qcow2_file']
 
         # Android
         if not env['_args_given']['android_base_dir']:
@@ -1220,6 +1351,8 @@ lunch aosp_{}-eng
         These are arguments that might be used by more than one script,
         and are all defined in this class instead of in the derived class
         of the script.
+
+        This can be used to forward common arguments to a call of another CLI function.
         '''
         return {
             key:self.env[key] for key in self._common_args if
@@ -1315,6 +1448,9 @@ lunch aosp_{}-eng
                  return that. Otherwise, return 0.
         '''
         env = kwargs.copy()
+        if env['china']:
+            print(china_dictatorship.get_data())
+            sys.exit(0)
         self.input_args = env.copy()
         env.update(consts)
         real_all_archs = env['all_archs']
@@ -1346,7 +1482,7 @@ lunch aosp_{}-eng
                                 continue
                             else:
                                 raise Exception('native emulator only supported in if target arch == host arch')
-                        if env['userland'] is None and not env['mode'] == 'userland':
+                        if env['userland'] and not env['mode'] == 'userland':
                             if real_all_emulators:
                                 continue
                             else:
@@ -1363,11 +1499,12 @@ lunch aosp_{}-eng
                         env['_args_given']['emulators'] = True
                         env['all_emulators'] = False
                         self.env = env.copy()
-                        self._init_env(self.env)
                         self.sh = shell_helpers.ShellHelpers(
                             dry_run=self.env['dry_run'],
+                            force_oneline=self.env['print_cmd_oneline'],
                             quiet=(not show_cmds),
                         )
+                        self._init_env(self.env)
                         self.setup_one()
                         ret = self.timed_main()
                         if not env['dry_run']:
@@ -1400,6 +1537,25 @@ lunch aosp_{}-eng
         os.makedirs(self.env['gem5_run_dir'], exist_ok=True)
         os.makedirs(self.env['p9_dir'], exist_ok=True)
         os.makedirs(self.env['qemu_run_dir'], exist_ok=True)
+
+    @staticmethod
+    def python_escape_double_quotes(s):
+        s2 = []
+        for c in s:
+            if c == '"':
+                s2.append('\\"')
+            else:
+                s2.append(c)
+        return ''.join(s2)
+
+    @staticmethod
+    def python_struct_int_format(size):
+        if size == 4:
+            return 'i'
+        elif size ==  8:
+            return 'Q'
+        else:
+            raise 'unknown size {}'.format(size)
 
     @staticmethod
     def seconds_to_hms(seconds):
@@ -1584,6 +1740,12 @@ class BuildCliFunction(LkmcCliFunction):
 Pass the given compiler flags to all languages (C, C++, Fortran, etc.)
 ''',
             },
+            '--configure': {
+                'default': True,
+                'help': '''\
+Also run the configuration step during build.
+''',
+            },
             '--force-rebuild': {
                 'default': False,
                 "help": '''\
@@ -1592,17 +1754,26 @@ Force rebuild even if sources didn't change.
             },
             '--optimization-level': {
                 'default': '0',
-                'help': '''
-Use the given GCC -O optimization level.
-For some scripts, there are hard technical challenges why it cannot
-be implemented, e.g.: https://cirosantilli.com/linux-kernel-module-cheat#kernel-o0
-and for others such as gem5 have their custom mechanism:
-https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
+                'help': '''\
+https://cirosantilli.com/linux-kernel-module-cheat#optimization-level-of-a-build
 ''',
-            }
+            },
+            'extra_make_args': {
+                'default': [],
+                'help': '''\
+Extra arguments to pass to the Make command or analogous final build command,
+after configure, e.g. SCons. Usually contains specific targets or other build flags.
+''',
+                'metavar': 'extra-make-args',
+                'nargs': '*',
+            },
         }
 
     def _add_argument(self, argument_name):
+        '''
+        Enable build argument with a fixed name to provide an uniform CLI API
+        across different builds.
+        '''
         self.add_argument(
             argument_name,
             **self._build_arguments[argument_name]
@@ -1652,10 +1823,16 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
             if extra_objs is None:
                 extra_objs= []
             if link:
-                if self.env['mode'] == 'baremetal' or my_path_properties['extra_objs_lkmc_common']:
+                #  Baremetal builds cannot add their usual syscall objects, as those
+                # rely on standard library symbols.
+                if my_path_properties['freestanding']:
+                    extra_objs = []
+                if (self.env['mode'] == 'baremetal' and not my_path_properties['freestanding']) \
+                        or my_path_properties['extra_objs_lkmc_common']:
                     extra_objs.extend(extra_objs_lkmc_common)
                 if (
                     self.env['mode'] == 'baremetal' and
+                    not my_path_properties['freestanding'] and
                     not my_path_properties['extra_objs_disable_baremetal_bootloader']
                 ):
                     extra_objs.extend(extra_objs_baremetal_bootloader)
@@ -1698,6 +1875,11 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                     else:
                                         eigen_root = self.env['buildroot_staging_dir']
                                     packages = {
+                                        'boost': {
+                                            # Header only, no pkg-config package.
+                                            'cc_flags': [],
+                                            'cc_flags_after': [],
+                                        },
                                         'eigen': {
                                             # TODO: was failing with:
                                             # fatal error: Eigen/Dense: No such file or directory as of
@@ -1716,19 +1898,26 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                             # Header only.
                                             'cc_flags_after': [],
                                         },
+                                        'hdf5': {
+                                            'pkg_config_id': 'hdf5-serial',
+                                        },
                                     }
                                     package_key = dirpath_relative_root_components[2]
                                     if package_key in packages:
                                         package = packages[package_key]
                                     else:
                                         package = {}
+                                    if 'pkg_config_id' in package:
+                                        pkg_config_id = package['pkg_config_id']
+                                    else:
+                                        pkg_config_id = package_key
                                     if 'cc_flags' in package:
                                         cc_flags.extend(package['cc_flags'])
                                     else:
                                         pkg_config_output = self.sh.check_output([
                                             self.env['pkg_config'],
                                             '--cflags',
-                                            package_key
+                                            pkg_config_id
                                         ]).decode()
                                         cc_flags.extend(self.sh.shlex_split(pkg_config_output))
                                     if 'cc_flags_after' in package:
@@ -1737,7 +1926,7 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                         pkg_config_output = subprocess.check_output([
                                             self.env['pkg_config'],
                                             '--libs',
-                                            package_key
+                                            pkg_config_id
                                         ]).decode()
                                         cc_flags_after.extend(self.sh.shlex_split(pkg_config_output))
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -1782,6 +1971,24 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
             if os.path.getmtime(src) > os.path.getmtime(dst):
                 return True
         return False
+
+    def setup_one(self):
+        ccflags = []
+        ccflags.extend(self.env['ccflags_default'])
+        if 'optimization_level' in self.env:
+            ccflags.extend(['-O{}'.format(self.env['optimization_level']), LF])
+        if self.env['static']:
+            ccflags.extend(['-static', LF])
+        if 'ccflags' in self.env:
+            ccflags.extend(self.sh.shlex_split(self.env['ccflags']))
+        self.env['ccflags'] = ccflags
+        self.setup_one_build()
+
+    def setup_one_build(self):
+        '''
+        Called once before every build type, after BuildCliFunction::setup_one
+        '''
+        pass
 
     def timed_main(self):
         '''

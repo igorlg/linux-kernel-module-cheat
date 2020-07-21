@@ -21,10 +21,7 @@ and the root filesystem.
         self.add_argument(
             '--build-linux', default=False,
             help='''\
-Enable building the Linux kernel with Buildroot. This is done mostly
-to extract Buildroot's default kernel configurations when updating Buildroot.
-This kernel will not be use by our other scripts. Configuring this kernel is
-not currently supported, juse use ./build-linux script if you want to do that.
+See https://cirosantilli.com/linux-kernel-module-cheat#buildroot-vanilla-kernel
 '''
         )
         self.add_argument(
@@ -63,14 +60,8 @@ still rebuild the Buildroot package that provides those files to actually put th
 files on the root filesystem.
 '''
         )
-        self.add_argument(
-            'extra-make-args', default=[], nargs='*',
-            help='''\
-Extra arguments to be passed to the Buildroot make,
-usually extra Buildroot targets.
-'''
-        )
         self._add_argument('--force-rebuild')
+        self._add_argument('extra_make_args')
 
     def build(self):
         build_dir = self.get_build_dir()
@@ -162,7 +153,7 @@ usually extra Buildroot targets.
             extra_make_args
             ,
             out_file=os.path.join(self.env['buildroot_build_dir'], self.env['repo_short_id'] + '.log'),
-            delete_env=['LD_LIBRARY_PATH'],
+            delete_env=['LD_LIBRARY_PATH', 'PERL_MM_OPT'],
             cwd=self.env['buildroot_source_dir'],
         )
         # Create the qcow2 from ext2.

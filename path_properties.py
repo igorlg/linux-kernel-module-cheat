@@ -50,6 +50,7 @@ class PathProperties:
         'extra_objs_disable_baremetal_bootloader': False,
         # We should get rid of this if we ever properly implement dependency graphs.
         'extra_objs_lkmc_common': False,
+        'freestanding': False,
         'gem5_unimplemented_instruction': False,
         # Fully, or partially unimplemented.
         'gem5_unimplemented_syscall': False,
@@ -59,11 +60,13 @@ class PathProperties:
         'minimum_gcc_version': (0, 0, 0),
         # The script takes a perceptible amount of time to run. Possibly an infinite loop.
         'more_than_1s': False,
-        # The path should not be built. E.g., it is symlinked into multiple archs.
+        # The path should not be built. E.g.:
+        # - it is symlinked into multiple archs
+        # - we have not integrated into the build yet, often it is being important from another repo
+        #   and has a Makefile
         'no_build': False,
         # The path does not generate an executable in itself, e.g.
         # it only generates intermediate object files. Therefore it
-        # should not be run while testing.
         'no_executable': False,
         'qemu_unimplemented_instruction': False,
         # The script requires a non-trivial to determine argument to be passed to run properly.
@@ -79,6 +82,7 @@ class PathProperties:
         'requires_m5ops': False,
         # gem5 fatal: syscall getcpu (#168) unimplemented.
         'requires_syscall_getcpu': False,
+        'requires_syscall_get_nprocs': False,
         'requires_semihosting': False,
         # The example requires sudo, which usually implies that it can do something
         # deeply to the system it runs on, which would preventing further interactive
@@ -267,7 +271,9 @@ class PathProperties:
                     self['signal_received'] is not None or
                     self['requires_dynamic_library'] or
                     self['requires_semihosting'] or
-                    self['requires_syscall_getcpu']
+                    self['requires_syscall_getcpu'] or
+                    # https://gem5.atlassian.net/browse/GEM5-622
+                    self['requires_syscall_get_nprocs']
                 )
             ) and
             not (
@@ -371,13 +377,18 @@ freestanding_properties = {
         '-static', LF,
     ],
     'extra_objs_lkmc_common': False,
+    'freestanding': True,
 }
 # https://cirosantilli.com/linux-kernel-module-cheat#nostartfiles-programs
 nostartfiles_properties = {
+    # The baremetal bootloader sets up the stack to a valid value.
+    # Therefore, without it, C code may not be called, and so this is very restrictive in general.
+    # Programs that don't call C code nor use stack can still work.
     'baremetal': False,
     'cc_flags': [
         '-nostartfiles', LF,
     ],
+    'extra_objs_disable_baremetal_bootloader': True,
 }
 # See: https://cirosantilli.com/linux-kernel-module-cheat#path-properties
 path_properties_tuples = (
@@ -403,7 +414,6 @@ path_properties_tuples = (
                                 'no_bootloader': (
                                     {'extra_objs_disable_baremetal_bootloader': True},
                                     {
-                                        'gem5_exit.S': {'requires_m5ops': True},
                                         'multicore_asm.S': {'test_run_args': {'cpus': 2}},
                                         'semihost_exit.S': {'requires_semihosting': True},
                                     }
@@ -420,7 +430,6 @@ path_properties_tuples = (
                                 'no_bootloader': (
                                     {'extra_objs_disable_baremetal_bootloader': True},
                                     {
-                                        'gem5_exit.S': {'requires_m5ops': True},
                                         'multicore_asm.S': {'test_run_args': {'cpus': 2}},
                                         'semihost_exit.S': {'requires_semihosting': True},
                                         'wfe_loop.S': {'more_than_1s': True},
@@ -525,17 +534,28 @@ path_properties_tuples = (
                                     },
                                     {
                                         'freestanding': freestanding_properties,
+                                        'futex_sev.cpp': {'more_than_1s': True},
                                         'sve_addvl.c': {'arm_sve': True},
-                                        'wfe_sev.c': {
+                                        'wfe_ldxr_str.cpp': {
+                                            'allowed_emulators': {'qemu'},
+                                            'test_run_args': {'cpus': 2}
+                                        },
+                                        'wfe_ldxr_stxr.cpp': {
+                                            'allowed_emulators': {'qemu'},
+                                            'test_run_args': {'cpus': 2}
+                                        },
+                                        'wfe_sev.cpp': {
                                             # gem5 bug, WFE not waking up on syscall emulation,
                                             # TODO link to bug report.
-                                            'more_than_1s': True,
-                                            'test_run_args': {
-                                                'cpus': 2,
-                                            },
+                                            'allowed_emulators': {'qemu'},
+                                            'test_run_args': {'cpus': 2},
                                         },
                                     },
                                 ),
+                                'dump_regs.c': {
+                                    # https://gem5.atlassian.net/browse/GEM5-619
+                                    'allowed_emulators': {'qemu'},
+                                },
                                 'freestanding': (
                                     freestanding_properties,
                                     {
@@ -637,16 +657,21 @@ path_properties_tuples = (
                             'test_run_args': {'cpus': 3},
                         },
                         'assert_fail.c': {'signal_received': signal.Signals.SIGABRT},
-                        # This has complex failure modes, too hard to assert.
-                        'smash_stack.c': {'skip_run_unclassified': True},
+                        # Not sure which argument to pass.
+                        'cat.c': {'skip_run_unclassified': True},
                         'exit1.c': {'exit_status': 1},
                         'exit2.c': {'exit_status': 2},
                         'false.c': {'exit_status': 1},
                         'file_write_read.c': {'baremetal': False},
                         'getchar.c': {'interactive': True},
                         'malloc_max.c': {'disrupts_system': True},
+                        'm5ops.c': {'allowed_emulators': {'gem5'}},
                         'return1.c': {'exit_status': 1},
                         'return2.c': {'exit_status': 2},
+                        # This has complex failure modes, too hard to assert.
+                        'smash_stack.c': {'skip_run_unclassified': True},
+                        # Wrapper not defined by newlib.
+                        'timespec_get.c': {'baremetal': False},
                     }
                 ),
                 'cpp': (
@@ -659,11 +684,16 @@ path_properties_tuples = (
                             {
                                 'aarch64_add.cpp': {'allowed_archs': {'aarch64'}},
                                 'aarch64_ldadd.cpp': {'allowed_archs': {'aarch64'}},
+                                'aarch64_ldaxr_stlxr.cpp': {'allowed_archs': {'aarch64'}},
                                 'x86_64_inc.cpp': {'allowed_archs': {'x86_64'}},
                                 'x86_64_lock_inc.cpp': {'allowed_archs': {'x86_64'}},
                             },
                         ),
                         'count.cpp': {'more_than_1s': True},
+                        'thread_hardware_concurrency.cpp': {'requires_syscall_get_nprocs': True},
+                        'initialization_types.cpp': {'cc_flags':
+                            ['-Wno-unused-variable', LF, '-Wno-unused-but-set-variable', LF]},
+                        'm5ops.cpp': {'allowed_emulators': {'gem5'}},
                         'parallel_sort.cpp': {'minimum_gcc_version': (9, 0, 0)},
                         'sleep_for.cpp': {
                             'more_than_1s': True,
@@ -675,9 +705,17 @@ path_properties_tuples = (
                         'thread_return_value.cpp': {'test_run_args': {'cpus': 2}},
                     },
                 ),
+                'freestanding': (
+                    {**freestanding_properties, **{'baremetal': True}},
+                    {
+                        'gem5_checkpoint.S': {'allowed_emulators': {'gem5'}},
+                        'gem5_exit.S': {'allowed_emulators': {'gem5'}},
+                    }
+                ),
                 'gcc': (
                     {**gnu_extension_properties, **{'cc_pedantic': False}},
                     {
+                        'busy_loop.c': {'baremetal': True},
                         'openmp.c': {'cc_flags': ['-fopenmp', LF]},
                     }
                 ),
@@ -686,7 +724,19 @@ path_properties_tuples = (
                 'libs': (
                     {'requires_dynamic_library': True},
                     {
+                        'cython': {'no_build': True},
                         'libdrm': {'requires_sudo': True},
+                        'hdf5': (
+                            {},
+                            {
+                                'hello_cpp.cpp': {
+                                    'cc_flags_after': ['-lhdf5_cpp', LF],
+                                },
+                            }
+                        ),
+                        # Makefile build, generates shared libraries.
+                        'pybind11': {'no_build': True},
+                        'python_embed': {'no_build': True},
                     }
                 ),
                 'linux': (
@@ -695,6 +745,10 @@ path_properties_tuples = (
                         'ctrl_alt_del.c': {'requires_sudo': True},
                         'futex.c': {
                             'more_than_1s': True,
+                            'test_run_args': {'cpus': 2},
+                        },
+                        'getcpu.c': {
+                            'requires_syscall_getcpu': True,
                             'test_run_args': {'cpus': 2},
                         },
                         'init_env_poweroff.c': {'requires_sudo': True},
@@ -717,6 +771,15 @@ path_properties_tuples = (
                             'more_than_1s': True,
                             'requires_syscall_getcpu': True,
                         },
+                        'sched_getcpu.c': {
+                            'requires_syscall_getcpu': True,
+                            'test_run_args': {'cpus': 2},
+                        },
+                        'sched_getcpu_barrier.c': {
+                            'requires_syscall_getcpu': True,
+                            'test_run_args': {'cpus': 2},
+                        },
+                        'sysconf.c': {'requires_syscall_get_nprocs': True},
                         'time_boot.c': {'requires_sudo': True},
                         'virt_to_phys_user.c': {'requires_argument': True},
                     }

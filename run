@@ -2,7 +2,9 @@
 
 import os
 import re
+import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -38,12 +40,31 @@ Ctrl + C kills the QEMU simulator instead of being passed to the guest.
             help='''\
 Run GDB on the emulator itself.
 For --emulator native, this debugs the target program.
+See also: https://cirosantilli.com/linux-kernel-module-cheat#debug-the-emulator
 '''
         )
         self.add_argument(
             '--debug-vm-args',
             default='',
-            help='Pass arguments to GDB. Implies --debug-vm.'
+            help='''\
+Pass arguments to GDB. Implies --debug-vm. If --debug-vm-rr is used,
+pass the given arguments to GDB on the replay.
+'''
+        )
+        self.add_argument(
+            '--debug-vm-file',
+            help='''\
+Like --debug-vm, but also source this file. Equivalent to
+--debug-vm-args='-ex "source $file"'.
+'''
+        )
+        self.add_argument(
+            '--debug-vm-ex',
+            default='',
+            help='''\
+Like --debug-vm-args, but takes as argument a semicolon separated list of
+-ex commands.
+'''
         )
         self.add_argument(
             '--debug-vm-rr',
@@ -116,7 +137,10 @@ See: https://cirosantilli.com/linux-kernel-module-cheat#gdb
             '--gem5-script',
             default='fs',
             choices=['fs', 'biglittle'],
-            help='Which gem5 script to use'
+            help='''\
+Which gem5 script to use.
+See e.g.: https://cirosantilli.com/linux-kernel-module-cheat#gem5-fs-biglittle
+'''
         )
         self.add_argument(
             '--gem5-readfile',
@@ -157,6 +181,7 @@ Pass an extra Linux kernel command line options, and place them before
 the dash separator `-`. Only options that come before the `-`, i.e.
 "standard" options, should be passed with this option.
 Example: `./run --arch arm --kernel-cli 'init=/lkmc/poweroff.out'`
+See also: https://cirosantilli.com/linux-kernel-module-cheat#init-environment
 '''
         )
         self.add_argument(
@@ -167,6 +192,7 @@ separator, and place the options after the dash. Intended for custom
 options understood by our `init` scripts, most of which are prefixed
 by `lkmc_`.
 Example: `./run --kernel-cli-after-dash 'lkmc_eval="wget google.com" lkmc_lala=y'`
+See also: https://cirosantilli.com/linux-kernel-module-cheat#init-environment
 '''
         )
         self.add_argument(
@@ -349,7 +375,7 @@ Extra options to append at the end of the emulator command line.
             if not self.env['_args_given']['gdb_wait']:
                 self.env['gdb_wait'] = True
             if not self.env['_args_given']['tmux_args']:
-                if self.env['userland'] is None and self.env['baremetal'] is None:
+                if not self.env['userland'] and not self.env['baremetal']:
                     self.env['tmux_args'] = 'start_kernel'
                 else:
                     self.env['tmux_args'] = 'main'
@@ -359,8 +385,13 @@ Extra options to append at the end of the emulator command line.
             self.env['tmux'] = True
         if self.env['debug_vm_rr']:
             debug_vm = ['rr', 'record']
-        elif self.env['debug_vm'] or self.env['debug_vm_args']:
-            debug_vm = ['gdb', LF, '-q', LF] + self.sh.shlex_split(self.env['debug_vm_args']) + ['--args', LF]
+        elif self.env['debug_vm'] or self.env['debug_vm_args'] or self.env['debug_vm_file'] or self.env['debug_vm_ex']:
+            debug_vm = ['gdb', LF, '-q', LF] + self.sh.shlex_split(self.env['debug_vm_args'])
+            for cmd in self.env['debug_vm_ex'].split(';'):
+                debug_vm.extend(['-ex', cmd, LF]);
+            if self.env['debug_vm_file'] is not None:
+                debug_vm.extend(['-ex', 'source {}'.format(self.env['debug_vm_file']), LF])
+            debug_vm.extend(['--args', LF])
         else:
             debug_vm = []
         if self.env['gdb_wait']:
@@ -431,8 +462,8 @@ Extra options to append at the end of the emulator command line.
         if not os.path.exists(self.env['image']):
             if self.env['emulator'] == 'gem5':
                 if (
-                    self.env['baremetal'] is None and
-                    self.env['userland'] is None
+                    not self.env['baremetal'] and
+                    not self.env['userland']
                 ):
                     # This is an attempte to run gem5 from a prebuilt download
                     # but it is not working:
@@ -450,14 +481,50 @@ Extra options to append at the end of the emulator command line.
                     raise_image_not_found()
             else:
                 raise_image_not_found()
+        if self.env['baremetal']:
+            # Setup CLI arguments into a single raw binary file to be loaded into memory.
+            # The memory setup of that file is:
+            # argc
+            # argv[0] pointer
+            # argv[1] pointer
+            # ...
+            # argv[N] pointer
+            # argv[0][0] data
+            # argv[0][1] data
+            # ...
+            # argv[1][0] data
+            # argv[1][1] data
+            # ...
+            cli_args = [os.path.basename(self.env['image'])]
+            if self.env['cli_args'] is not None:
+                cli_args.extend(shlex.split(self.env['cli_args']))
+            argc_addr = self.env['entry_address'] + self.env['baremetal_max_text_size'] + self.env['baremetal_memory_size']
+            argv_addr = argc_addr + self.env['int_size']
+            argv_data_addr = argv_addr + len(cli_args) * self.env['address_size']
+            argv_addr_data = []
+            argv_addr_cur = argv_data_addr
+            for arg in cli_args:
+                argv_addr_data.append(struct.pack(
+                    '<{}'.format(
+                        self.python_struct_int_format(self.env['address_size'])
+                    ),
+                    argv_addr_cur
+                ))
+                argv_addr_cur += len(arg) + 1
+            baremetal_cli_path = os.path.join(self.env['run_dir'], 'baremetal_cli.raw')
+            if self.env['emulator'] == 'qemu':
+                self.make_run_dirs()
+            with open(baremetal_cli_path, 'wb') as f:
+                f.write(struct.pack('<{}'.format(self.python_struct_int_format(self.env['int_size'])), len(cli_args)))
+                f.write(b''.join(argv_addr_data))
+                f.write(b'\0'.join(arg.encode() for arg in cli_args) + b'\0')
+        use_disk_image = self.env['disk_image'] is not None and \
+            os.path.exists(self.env['disk_image']) or \
+            not self.env['baremetal']
         if self.env['emulator'] == 'gem5':
             if self.env['quiet']:
                 show_stdout = False
-            if not self.env['baremetal'] is None:
-                if not os.path.exists(self.env['gem5_fake_iso']):
-                    os.makedirs(os.path.dirname(self.env['gem5_fake_iso']), exist_ok=True)
-                    self.sh.write_string_to_file(self.env['gem5_fake_iso'], 'a' * 512)
-            elif self.env['userland'] is None:
+            if not self.env['baremetal'] and not self.env['userland']:
                 if not os.path.exists(self.env['rootfs_raw_file']):
                     if not os.path.exists(self.env['qcow2_file']):
                         raise_rootfs_not_found()
@@ -468,8 +535,7 @@ Extra options to append at the end of the emulator command line.
             gem5_exe_args = self.sh.shlex_split(self.env['gem5_exe_args'])
             if do_trace:
                 gem5_exe_args.extend(['--debug-flags', trace_type, LF])
-            extra_env['M5_PATH'] = self.env['gem5_system_dir']
-            # https://stackoverflow.com/questions/52312070/how-to-modify-a-file-under-src-python-and-run-it-without-rebuilding-in-gem5/52312071#52312071
+            # https://cirosantilli.com/linux-kernel-module-cheat#m5-override-py-source
             extra_env['M5_OVERRIDE_PY_SOURCE'] = 'true'
             if self.env['trace_stdout']:
                 debug_file = 'cout'
@@ -484,20 +550,33 @@ Extra options to append at the end of the emulator command line.
                 ] +
                 gem5_exe_args
             )
-            if self.env['userland'] is not None:
+            if self.env['gem5_restore'] is not None:
+                # https://cirosantilli.com/linux-kernel-module-cheat#gem5-checkpoint-internals
+                cpt_dirs = self.gem5_list_checkpoint_dirs()
+                cpt_dir = cpt_dirs[-self.env['gem5_restore']]
+                cpt_dirs_sorted_by_tick = sorted(cpt_dirs, key=lambda x: int(x.split('.')[1]))
+                extra_emulator_args.extend(['-r', str(cpt_dirs_sorted_by_tick.index(cpt_dir) + 1)])
+            if self.env['userland']:
+                cmd_opt = self.env['image']
+                for u in self.env['userland'][1:]:
+                    cmd_opt += ';' + self.resolve_userland_executable(u)
+                if len(self.env['userland']) > 1:
+                    workload_cpus = ':'
+                else:
+                    workload_cpus = '0'
                 cmd.extend([
                     self.env['gem5_se_file'], LF,
-                    '--cmd', self.env['image'], LF,
+                    '--cmd', cmd_opt, LF,
                     '--num-cpus', str(self.env['cpus']), LF,
                     # We have to use cpu[0] here because on multi-cpu workloads,
                     # cpu[1] and higher use workload as a proxy to cpu[0].workload.
                     # as can be seen from the config.ini.
                     # If system.cpu[:].workload[:] were used instead, we would get the error:
                     # "KeyError: 'workload'"
-                    '--param', 'system.cpu[0].workload[:].release = "{}"'.format(self.env['kernel_version']), LF,
+                    '--param', 'system.cpu[{}].workload[:].release = "{}"'.format(workload_cpus,self.env['kernel_version']), LF,
                 ])
-                if self.env['userland_args'] is not None:
-                    cmd.extend(['--options', self.env['userland_args'], LF])
+                if self.env['cli_args'] is not None:
+                    cmd.extend(['--options', self.env['cli_args'], LF])
                 if not self.env['static']:
                     for path in self.env['userland_library_redirects']:
                         cmd.extend([
@@ -511,23 +590,23 @@ Extra options to append at the end of the emulator command line.
                     cmd.extend(['--interp-dir', self.env['userland_library_dir'], LF])
             else:
                 if self.env['gem5_script'] == 'fs':
-                    if self.env['gem5_restore'] is not None:
-                        # https://cirosantilli.com/linux-kernel-module-cheat#gem5-checkpoint-internals
-                        cpt_dirs = self.gem5_list_checkpoint_dirs()
-                        cpt_dir = cpt_dirs[-self.env['gem5_restore']]
-                        cpt_dirs_sorted_by_tick = sorted(cpt_dirs, key=lambda x: int(x.split('.')[1]))
-                        extra_emulator_args.extend(['-r', str(cpt_dirs_sorted_by_tick.index(cpt_dir) + 1)])
                     cmd.extend([
                         self.env['gem5_fs_file'], LF,
-                        '--disk-image', self.env['disk_image'], LF,
                         '--kernel', self.env['image'], LF,
                         '--num-cpus', str(self.env['cpus']), LF,
                         '--script', self.env['gem5_readfile_file'], LF,
                     ])
+                    if use_disk_image:
+                        cmd.extend(['--disk-image', self.env['disk_image'], LF])
+                    if self.env['baremetal']:
+                        cmd.extend([
+                            '--param', 'system.workload.extras = "{}"'.format(self.python_escape_double_quotes(baremetal_cli_path)), LF,
+                            '--param', 'system.workload.extras_addrs = {}'.format(hex(argc_addr)), LF,
+                        ])
                     if self.env['arch'] == 'x86_64':
                         if self.env['kvm']:
                             cmd.extend(['--cpu-type', 'X86KvmCPU', LF])
-                        if self.env['baremetal'] is None:
+                        if not self.env['baremetal']:
                             cmd.extend(['--command-line', 'earlyprintk={} lpj=7999923 root=/dev/sda {}'.format(console, kernel_cli), LF])
                     elif self.env['is_arm']:
                         if self.env['kvm']:
@@ -541,11 +620,12 @@ Extra options to append at the end of the emulator command line.
                             # Anything smaller than physical blows up as expected, but why can't it auto-detect the right value?
                             '--machine-type', self.env['machine'], LF,
                         ])
-                        if self.env['baremetal'] is None:
+                        if not self.env['baremetal']:
                             cmd.extend([
                                 '--command-line',
                                 'earlyprintk=pl011,0x1c090000 lpj=19988480 rw loglevel=8 mem={} root=/dev/sda {}'.format(memory, kernel_cli), LF
                             ])
+                            cmd.extend(['--param', 'system.workload.panic_on_panic = True', LF])
                         dtb = None
                         if self.env['dtb'] is not None:
                             dtb = self.env['dtb']
@@ -562,9 +642,7 @@ Extra options to append at the end of the emulator command line.
                             )
                         if dtb is not None:
                             cmd.extend(['--dtb-filename', dtb, LF])
-                        if self.env['baremetal'] is None:
-                            cmd.extend(['--param', 'system.panic_on_panic = True', LF])
-                        else:
+                        if self.env['baremetal']:
                             cmd.extend([
                                 '--bare-metal', LF,
                                 '--param', 'system.auto_reset_addr = True', LF,
@@ -591,11 +669,12 @@ Extra options to append at the end of the emulator command line.
                         '--bootscript', self.env['gem5_readfile_file'], LF,
                         '--big-cpus', str((self.env['cpus'] + 1) // 2), LF,
                         '--cpu-type', cpu_type, LF,
-                        '--disk', self.env['disk_image'], LF,
                         '--kernel', self.env['image'], LF,
                         '--little-cpus', str(self.env['cpus'] // 2), LF,
                         '--root', '/dev/vda', LF,
                     ])
+                    if use_disk_image:
+                        cmd.extend(['--disk', self.env['disk_image'], LF])
                     if self.env['dtb']:
                         cmd.extend([
                             '--dtb',
@@ -606,6 +685,9 @@ Extra options to append at the end of the emulator command line.
                             ),
                             LF
                         ])
+                if self.env['gem5_script'] == 'fs' or self.env['gem5_script'] == 'biglittle':
+                    if self.env['gem5_bootloader'] is not None:
+                        cmd.extend(['--bootloader', self.env['gem5_bootloader'], LF])
             cmd.extend(['--mem-size', memory, LF])
             if self.env['gdb_wait']:
                 # https://stackoverflow.com/questions/49296092/how-to-make-gem5-wait-for-gdb-to-connect-to-reliably-break-at-start-kernel-of-th
@@ -614,7 +696,7 @@ Extra options to append at the end of the emulator command line.
             qemu_user_and_system_options = [
                 '-trace', 'enable={},file={}'.format(trace_type, self.env['qemu_trace_file']), LF,
             ]
-            if self.env['userland'] is not None:
+            if self.env['userland']:
                 if self.env['gdb_wait']:
                     debug_args = ['-g', str(self.env['gdb_port']), LF]
                 else:
@@ -632,7 +714,6 @@ Extra options to append at the end of the emulator command line.
                 cpu = 'max'
             else:
                 extra_emulator_args.extend(extra_qemu_args)
-                self.make_run_dirs()
                 if debug_vm:
                     serial_monitor = []
                 else:
@@ -705,6 +786,13 @@ Extra options to append at the end of the emulator command line.
                 )
                 if self.env['dtb'] is not None:
                     cmd.extend(['-dtb', self.env['dtb'], LF])
+                if self.env['baremetal']:
+                    cmd.extend([
+                        '-device', 'loader,addr={},file={},force-raw=on'.format(
+                            hex(argc_addr),
+                            baremetal_cli_path,
+                        ), LF,
+                    ])
                 if not self.env['qemu_which'] == 'host':
                     cmd.extend(qemu_user_and_system_options)
                 if self.env['initrd']:
@@ -724,11 +812,17 @@ Extra options to append at the end of the emulator command line.
                         root = 'root=/dev/vda'
                         rrid = ''
                         snapshot = ',snapshot'
-                    if self.env['baremetal'] is None:
+                    if not self.env['baremetal']:
                         if not os.path.exists(self.env['qcow2_file']):
                             if not os.path.exists(self.env['rootfs_raw_file']):
                                 raise_rootfs_not_found()
                             self.raw_to_qcow2(qemu_which=self.env['qemu_which'])
+                        if rr:
+                            extra_emulator_args.extend([
+                            '-drive', 'driver=blkreplay,if=none,image=img-direct,id=img-blkreplay', LF,
+                            '-device', 'ide-hd,drive=img-blkreplay', LF,
+                        ])
+                    if use_disk_image:
                         extra_emulator_args.extend([
                             '-drive',
                             'file={},format=qcow2,if={}{}{}'.format(
@@ -738,11 +832,6 @@ Extra options to append at the end of the emulator command line.
                                 rrid
                             ),
                             LF,
-                        ])
-                        if rr:
-                            extra_emulator_args.extend([
-                            '-drive', 'driver=blkreplay,if=none,image=img-direct,id=img-blkreplay', LF,
-                            '-device', 'ide-hd,drive=img-blkreplay', LF,
                         ])
                 if rr:
                     extra_emulator_args.extend([
@@ -766,13 +855,16 @@ Extra options to append at the end of the emulator command line.
                     cmd.extend(
                         virtio_gpu_pci
                     )
-                if self.env['baremetal'] is None:
+                if not self.env['baremetal']:
                     cmd.extend(append)
             extra_emulator_args.extend([
                 '-cpu', cpu, LF,
             ])
         if self.env['tmux']:
-            tmux_args = '--run-id {}'.format(self.env['run_id'])
+            tmux_args = "--gem5-build-id '{}' --run-id {}".format(
+                self.env['gem5_build_id'],
+                self.env['run_id']
+            )
             if self.env['tmux_program'] == 'shell':
                 if self.env['emulator'] == 'gem5':
                     tmux_cmd = os.path.join(self.env['root_dir'], 'gem5-shell')
@@ -784,18 +876,17 @@ Extra options to append at the end of the emulator command line.
                 # Part of me wants to: https://github.com/jonathanslenders/pymux
                 # but it cannot be used as a library properly it seems, and it is
                 # slower than tmux.
-                tmux_args += " --arch {} --emulator '{}' --gcc-which '{}' --linux-build-id '{}' --run-id '{}' --userland-build-id '{}'".format(
+                tmux_args += " --arch {} --emulator '{}' --gcc-which '{}' --linux-build-id '{}' --userland-build-id '{}'".format(
                     self.env['arch'],
                     self.env['emulator'],
                     self.env['gcc_which'],
                     self.env['linux_build_id'],
-                    self.env['run_id'],
                     self.env['userland_build_id'],
                 )
                 if self.env['baremetal']:
-                    tmux_args += " --baremetal '{}'".format(self.env['baremetal'])
+                    tmux_args += " --baremetal '{}'".format(self.env['baremetal'][0])
                 if self.env['userland']:
-                    tmux_args += " --userland '{}'".format(self.env['userland'])
+                    tmux_args += " --userland '{}'".format(self.env['userland'][0])
                 if self.env['in_tree']:
                     tmux_args += ' --in-tree'
             if self.env['tmux_args'] is not None:
@@ -809,17 +900,19 @@ Extra options to append at the end of the emulator command line.
         cmd.extend(extra_emulator_args)
         cmd.extend(self.env['extra_emulator_args'])
         if self.env['userland'] and self.env['emulator'] in ('qemu', 'native'):
+            if len(self.env['userland']) > 1:
+                raise Exception('qemu and native machines only support a single executable')
             # The program and arguments must come at the every end of the CLI.
             cmd.extend([self.env['image'], LF])
-            if self.env['userland_args'] is not None:
-                cmd.extend(self.sh.shlex_split(self.env['userland_args']))
+            if self.env['cli_args'] is not None:
+                cmd.extend(self.sh.shlex_split(self.env['cli_args']))
         if debug_vm or self.env['terminal']:
             out_file = None
         else:
             out_file = self.env['termout_file']
         exit_status = self.sh.run_cmd(
             cmd,
-            cmd_file=self.env['run_cmd_file'],
+            cmd_files=[self.env['run_cmd_file'], os.path.join(self.env['out_dir'], self.env['run_cmd_file_basename'])],
             extra_env=extra_env,
             out_file=out_file,
             raise_on_failure=False,
@@ -827,8 +920,11 @@ Extra options to append at the end of the emulator command line.
             stdin_path=self.env['stdin_file'],
         )
         if self.env['debug_vm_rr']:
+            rr_cmd = ['rr', 'replay', LF, '-o', '-q', LF]
+            for arg in shlex.split(self.env['debug_vm_args']):
+                rr_cmd.extend(['-o', arg, LF]);
             exit_status = self.sh.run_cmd(
-                ['rr', 'replay', '-o', '-q'],
+                rr_cmd,
                 raise_on_failure=False,
                 show_stdout=show_stdout,
             )

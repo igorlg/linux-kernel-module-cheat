@@ -1,3 +1,9 @@
+/* https://cirosantilli.com/linux-kernel-module-cheat#userland-physical-address-experiments
+ * https://cirosantilli.com/linux-kernel-module-cheat#pagemap-dump-out
+ *
+ * This file is dual licensed as both 3-Clause BSD and GPLv3.
+ */
+
 #ifndef LKMC_PAGEMAP_H
 #define LKMC_PAGEMAP_H
 
@@ -37,7 +43,7 @@ int lkmc_pagemap_get_entry(LkmcPagemapEntry *entry, int pagemap_fd, uintptr_t va
     while (nread < sizeof(data)) {
         ret = pread(
             pagemap_fd,
-            &data,
+            ((uint8_t*)&data) + nread,
             sizeof(data) - nread,
             vpn * sizeof(data) + nread
         );

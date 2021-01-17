@@ -3,6 +3,7 @@
 import os
 import pathlib
 import subprocess
+import tempfile
 
 import common
 from shell_helpers import LF
@@ -33,7 +34,9 @@ Build and run all the gem5 unit tests instead of the gem5 executable.
 https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-tests
 '''
         )
+        self._add_argument('--ldflags')
         self._add_argument('extra_make_args')
+        self.eclipse_tmpdir = None
 
     def build(self):
         build_dir = self.get_build_dir()
@@ -108,15 +111,10 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
                 'CC': 'clang',
                 'CXX': 'clang++',
             }
-            gold_linker_cmd = []
         else:
             extra_env = {}
-            if self.env['gem5_build_type'] == 'debug':
-                # A debug build is pointless if I can't... debug!
-                # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/109
-                gold_linker_cmd = []
-            else:
-                gold_linker_cmd = ['--gold-linker', LF]
+        # https://cirosantilli.com/cirodown#benchmark-gem5-single-file-change-rebuild-time
+        ldflags_extra = ['-fuse-ld=lld'] + self.env['ldflags']
         kwargs = {}
         if self.env['ccache']:
             kwargs['extra_paths'] = [self.env['ccache_dir']]
@@ -126,13 +124,15 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
                     'scons', LF,
                     '-j', str(self.env['nproc']), LF,
                     '--ignore-style', LF,
+                    'LDFLAGS_EXTRA={}'.format(self.sh.cmd_to_string(ldflags_extra, force_oneline=True)), LF,
                     'USE_HDF5=1', LF,
                 ] +
-                gold_linker_cmd +
                 verbose +
                 [
                     # TODO reenable, broken, had enough of this.
                     # https://gem5.atlassian.net/browse/GEM5-357
+                    # https://gem5.atlassian.net/browse/GEM5-656
+                    # https://gem5.atlassian.net/browse/GEM5-778
                     #'SLICC_HTML=True', LF,
                 ] +
                 self.sh.add_newlines(targets) +
@@ -144,6 +144,19 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
             **kwargs
         )
         return exit_status
+
+    def clean_pre(self, builddir):
+        if os.path.exists(self.env['gem5_eclipse_cproject_path']):
+            self.eclipse_tmpdir = tempfile.mkdtemp()
+            self.sh.mv(self.env['gem5_eclipse_cproject_path'], self.eclipse_tmpdir)
+            self.sh.mv(self.env['gem5_eclipse_project_path'], self.eclipse_tmpdir)
+
+    def clean_post(self, builddir):
+        if self.eclipse_tmpdir is not None:
+            self.sh.mkdir_p(self.env['gem5_build_build_dir'])
+            self.sh.mv(os.path.join(self.eclipse_tmpdir, self.env['gem5_eclipse_cproject_basename']), self.env['gem5_build_build_dir'])
+            self.sh.mv(os.path.join(self.eclipse_tmpdir, self.env['gem5_eclipse_project_basename']), self.env['gem5_build_build_dir'])
+            self.sh.rmrf(self.eclipse_tmpdir)
 
     def get_build_dir(self):
         return self.env['gem5_build_dir']

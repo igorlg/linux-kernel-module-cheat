@@ -49,6 +49,7 @@ class PathProperties:
         # added to baremetal examples.
         'extra_objs_disable_baremetal_bootloader': False,
         # We should get rid of this if we ever properly implement dependency graphs.
+        # Enable: https://cirosantilli.com/linux-kernel-module-cheat#lkmc-c
         'extra_objs_lkmc_common': False,
         'freestanding': False,
         'gem5_unimplemented_instruction': False,
@@ -534,7 +535,14 @@ path_properties_tuples = (
                                     },
                                     {
                                         'freestanding': freestanding_properties,
-                                        'futex_sev.cpp': {'more_than_1s': True},
+                                        'futex_sev.cpp': {
+                                            'baremetal': False,
+                                            'more_than_1s': True,
+                                        },
+                                        'futex_ldxr_stxr.c': {
+                                            'baremetal': False,
+                                            'more_than_1s': True,
+                                        },
                                         'sve_addvl.c': {'arm_sve': True},
                                         'wfe_ldxr_str.cpp': {
                                             'allowed_emulators': {'qemu'},
@@ -652,6 +660,19 @@ path_properties_tuples = (
                     },
                     {
                         'abort.c': {'signal_received': signal.Signals.SIGABRT},
+                        'atomic': (
+                            {
+                                'baremetal': False,
+                                'test_run_args': {'cpus': 3},
+                            },
+                            {
+                                'aarch64_add.c': {'allowed_archs': {'aarch64'}},
+                                'aarch64_ldadd.c': {'allowed_archs': {'aarch64'}},
+                                'aarch64_ldaxr_stlxr.c': {'allowed_archs': {'aarch64'}},
+                                'x86_64_inc.c': {'allowed_archs': {'x86_64'}},
+                                'x86_64_lock_inc.c': {'allowed_archs': {'x86_64'}},
+                            },
+                        ),
                         'atomic.c': {
                             'baremetal': False,
                             'test_run_args': {'cpus': 3},
@@ -715,7 +736,10 @@ path_properties_tuples = (
                 'gcc': (
                     {**gnu_extension_properties, **{'cc_pedantic': False}},
                     {
-                        'busy_loop.c': {'baremetal': True},
+                        'busy_loop.c': {
+                            'baremetal': True,
+                            'extra_objs_lkmc_common': True,
+                        },
                         'openmp.c': {'cc_flags': ['-fopenmp', LF]},
                     }
                 ),
@@ -725,6 +749,12 @@ path_properties_tuples = (
                     {'requires_dynamic_library': True},
                     {
                         'cython': {'no_build': True},
+                        'googletest': (
+                            {},
+                            {
+                                'fail.cpp': {'exit_status': 1},
+                            }
+                        ),
                         'libdrm': {'requires_sudo': True},
                         'hdf5': (
                             {},
@@ -763,6 +793,14 @@ path_properties_tuples = (
                             'gem5_unimplemented_syscall': True
                         },
                         'pagemap_dump.c': {'requires_argument': True},
+                        'perf_event_open.c': {
+                            # QEMU the syscall just fails on QEMU, presumably because QEMU
+                            # does not have a microarchitecture model, and so it must just set
+                            # CPU bits that inform the kernel that the feature is not available.
+                            # https://cirosantilli.com/linux-kernel-module-cheat#gem5-vs-qemu
+                            'allowed_emulators': {'gem5'},
+                            'extra_objs_lkmc_common': True,
+                        },
                         'poweroff.c': {'requires_sudo': True},
                         'proc_events.c': {'requires_sudo': True},
                         'proc_events.c': {'requires_sudo': True},

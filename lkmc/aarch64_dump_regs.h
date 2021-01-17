@@ -1,8 +1,6 @@
 #ifndef LKMC_AARCH64_DUMP_REGS_H
 #define LKMC_AARCH64_DUMP_REGS_H
 
-#include <lkmc.h>
-
 /* https://cirosantilli.com/linux-kernel-module-cheat#dump-regs */
 
 /* So that a sigle source will work with baremetal and printk from kernel module. */
@@ -19,11 +17,12 @@
 #endif
 
 /* Dump registers that are only visible from privileged levels of the system. */
-void lkmc_dump_system_regs() {
+void lkmc_dump_system_regs(void) {
     uint32_t sctlr_el1;
     __asm__ ("mrs %0, sctlr_el1" : "=r" (sctlr_el1) : :);
     LKMC_DUMP_SYSTEM_REGS_PRINTF("SCTLR_EL1 0x%" PRIX32 "\n", sctlr_el1);
     LKMC_DUMP_SYSTEM_REGS_PRINTF("SCTLR_EL1.nTWE 0x%" PRIX32 "\n", (sctlr_el1 >> 18) & 1);
+    LKMC_DUMP_SYSTEM_REGS_PRINTF("SCTLR_EL1.C 0x%" PRIX32 "\n", (sctlr_el1 >> 2) & 1);
     LKMC_DUMP_SYSTEM_REGS_PRINTF("SCTLR_EL1.A 0x%" PRIX32 "\n", (sctlr_el1 >> 1) & 1);
     /* https://cirosantilli.com/linux-kernel-module-cheat#arm-paging */
     LKMC_DUMP_SYSTEM_REGS_PRINTF("SCTLR_EL1.M 0x%" PRIX32 "\n", (sctlr_el1 >> 0) & 1);

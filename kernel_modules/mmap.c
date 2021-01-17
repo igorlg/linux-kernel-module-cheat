@@ -1,5 +1,6 @@
 /* https://cirosantilli.com/linux-kernel-module-cheat#mmap */
 
+#include <asm-generic/io.h> /* virt_to_phys */
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h> /* min */
@@ -39,7 +40,7 @@ static vm_fault_t vm_fault(struct vm_fault *vmf)
 	return 0;
 }
 
-/* Aftr mmap. TODO vs mmap, when can this happen at a different time than mmap? */
+/* After mmap. TODO vs mmap, when can this happen at a different time than mmap? */
 static void vm_open(struct vm_area_struct *vma)
 {
 	pr_info("vm_open\n");
@@ -78,13 +79,19 @@ static int open(struct inode *inode, struct file *filp)
 static ssize_t read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
 	struct mmap_info *info;
-	int ret;
+	ssize_t ret;
 
 	pr_info("read\n");
-	info = filp->private_data;
-	ret = min(len, (size_t)BUFFER_SIZE);
-	if (copy_to_user(buf, info->data, ret)) {
-		ret = -EFAULT;
+	if ((size_t)BUFFER_SIZE <= *off) {
+		ret = 0;
+	} else {
+		info = filp->private_data;
+		ret = min(len, (size_t)BUFFER_SIZE - (size_t)*off);
+		if (copy_to_user(buf, info->data + *off, ret)) {
+			ret = -EFAULT;
+		} else {
+			*off += ret;
+		}
 	}
 	return ret;
 }
@@ -114,17 +121,17 @@ static int release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static const struct file_operations fops = {
-	.mmap = mmap,
-	.open = open,
-	.release = release,
-	.read = read,
-	.write = write,
+static const struct proc_ops pops = {
+	.proc_mmap = mmap,
+	.proc_open = open,
+	.proc_release = release,
+	.proc_read = read,
+	.proc_write = write,
 };
 
 static int myinit(void)
 {
-	proc_create(filename, 0, NULL, &fops);
+	proc_create(filename, 0, NULL, &pops);
 	return 0;
 }
 

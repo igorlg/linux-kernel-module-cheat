@@ -43,7 +43,7 @@ common = sys.modules[__name__]
 # Fixed parameters that don't depend on CLI arguments.
 consts = {}
 consts['repo_short_id'] = 'lkmc'
-consts['linux_kernel_version'] = '5.4.3'
+consts['linux_kernel_version'] = '5.9.1'
 # https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
 consts['in_docker'] = os.path.exists('/.dockerenv')
 consts['root_dir'] = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +69,8 @@ consts['kernel_modules_subdir'] = 'kernel_modules'
 consts['kernel_modules_source_dir'] = os.path.join(consts['root_dir'], consts['kernel_modules_subdir'])
 consts['userland_subdir'] = 'userland'
 consts['userland_source_dir'] = os.path.join(consts['root_dir'], consts['userland_subdir'])
+consts['userland_libs_basename'] = 'libs'
+consts['userland_source_libs_dir'] = os.path.join(consts['userland_source_dir'], consts['userland_libs_basename'])
 consts['userland_source_arch_dir'] = os.path.join(consts['userland_source_dir'], 'arch')
 consts['userland_executable_ext'] = '.out'
 consts['baremetal_executable_ext'] = '.elf'
@@ -83,6 +85,7 @@ consts['crosstool_ng_supported_archs'] = set(['arm', 'aarch64'])
 consts['linux_source_dir'] = os.path.join(consts['submodules_dir'], 'linux')
 consts['linux_config_dir'] = os.path.join(consts['root_dir'], 'linux_config')
 consts['gem5_default_source_dir'] = os.path.join(consts['submodules_dir'], 'gem5')
+consts['googletest_source_dir'] = os.path.join(consts['submodules_dir'], 'googletest')
 consts['rootfs_overlay_dir'] = os.path.join(consts['root_dir'], 'rootfs_overlay')
 consts['extract_vmlinux'] = os.path.join(consts['linux_source_dir'], 'scripts', 'extract-vmlinux')
 consts['qemu_source_dir'] = os.path.join(consts['submodules_dir'], 'qemu')
@@ -242,6 +245,9 @@ Enable or disable ccache: https://cirosantilli.com/linux-kernel-module-cheat#cca
             help='''\
 To have some fun when the kernel starts to beat you.
 '''
+        )
+        self.add_argument(
+            '--disk-image',
         )
         self.add_argument(
             '--dry-run',
@@ -556,7 +562,7 @@ Place the output files of userland build outputs inside the image within this
 additional prefix. This is mostly useful to place different versions of binaries
 with different build parameters inside image to compare them. See:
 * https://cirosantilli.com/linux-kernel-module-cheat#update-the-buildroot-toolchain
-* https://cirosantilli.com/linux-kernel-module-cheat#out_rootfs_overlay_dir
+* https://cirosantilli.com/linux-kernel-module-cheat#out-rootfs-overlay-dir
 '''
         )
         self.add_argument(
@@ -841,7 +847,8 @@ Incompatible archs are skipped.
         env['buildroot_linux_build_dir'] = join(env['buildroot_build_build_dir'], 'linux-custom')
         env['buildroot_vmlinux'] = join(env['buildroot_linux_build_dir'], 'vmlinux')
         env['buildroot_host_dir'] = join(env['buildroot_build_dir'], 'host')
-        env['buildroot_host_bin_dir'] = join(env['buildroot_host_dir'], 'usr', 'bin')
+        env['buildroot_host_usr_dir'] = join(env['buildroot_host_dir'], 'usr')
+        env['buildroot_host_bin_dir'] = join(env['buildroot_host_usr_dir'], 'bin')
         env['buildroot_pkg_config'] = join(env['buildroot_host_bin_dir'], 'pkg-config')
         env['buildroot_images_dir'] = join(env['buildroot_build_dir'], 'images')
         env['buildroot_rootfs_raw_file'] = join(env['buildroot_images_dir'], 'rootfs.ext2')
@@ -890,6 +897,13 @@ Incompatible archs are skipped.
         env['gem5_test_binaries_dir'] = join(env['gem5_out_dir'], 'test_binaries')
         env['gem5_m5term'] = join(env['gem5_build_dir'], 'm5term')
         env['gem5_build_build_dir'] = join(env['gem5_build_dir'], 'build')
+
+        # https://cirosantilli.com/linux-kernel-module-cheat#gem5-eclipse-configuration
+        env['gem5_eclipse_cproject_basename'] = '.cproject'
+        env['gem5_eclipse_project_basename'] = '.project'
+        env['gem5_eclipse_cproject_path'] = join(env['gem5_build_build_dir'], env['gem5_eclipse_cproject_basename'])
+        env['gem5_eclipse_project_path'] = join(env['gem5_build_build_dir'], env['gem5_eclipse_project_basename'])
+
         env['gem5_executable_dir'] = join(env['gem5_build_build_dir'], env['gem5_arch'])
         env['gem5_executable_suffix'] = '.{}'.format(env['gem5_build_type'])
         env['gem5_executable'] = self.get_gem5_target_path(env, 'gem5')
@@ -914,6 +928,11 @@ Incompatible archs are skipped.
             else:
                 env['gem5_source_dir'] = env['gem5_default_source_dir']
         env['gem5_m5_source_dir'] = join(env['gem5_source_dir'], 'util', 'm5')
+        if self.env['arch'] == 'x86_64':
+            env['gem5_m5_source_dir_build_arch'] = 'x86'
+        else:
+            env['gem5_m5_source_dir_build_arch'] = env['arch']
+        env['gem5_m5_source_dir_build'] = join(env['gem5_m5_source_dir'], 'build', env['gem5_m5_source_dir_build_arch'], 'out', 'm5')
         env['gem5_config_dir'] = join(env['gem5_source_dir'], 'configs')
         env['gem5_se_file'] = join(env['gem5_config_dir'], 'example', 'se.py')
         env['gem5_fs_file'] = join(env['gem5_config_dir'], 'example', 'fs.py')
@@ -952,7 +971,9 @@ Incompatible archs are skipped.
             except ValueError:
                 env['port_offset'] = 0
         if env['emulator'] == 'gem5':
-            env['gem5_telnet_port'] = 3456 + env['port_offset']
+            # Tims 4 because gem5 now has 3 UARTs tha take up the previous ports:
+            # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/131
+            env['gem5_telnet_port'] = 3456 + env['port_offset'] * 4
             env['gdb_port'] = 7000 + env['port_offset']
         else:
             env['qemu_base_port'] = 45454 + 10 * env['port_offset']
@@ -1049,7 +1070,7 @@ Incompatible archs are skipped.
         env['kernel_modules_build_host_subdir'] = join(env['kernel_modules_build_host_dir'], env['kernel_modules_subdir'])
 
         # Overlay.
-        # https://cirosantilli.com/linux-kernel-module-cheat#buildroot_packages-directory
+        # https://cirosantilli.com/linux-kernel-module-cheat#buildroot-packages-directory
         env['out_rootfs_overlay_dir'] = join(env['out_dir'], 'rootfs_overlay', env['arch'])
         env['out_rootfs_overlay_lkmc_dir'] = join(env['out_rootfs_overlay_dir'], env['repo_short_id'])
         env['out_rootfs_overlay_bin_dir'] = join(env['out_rootfs_overlay_dir'], 'bin')
@@ -1203,13 +1224,16 @@ Incompatible archs are skipped.
             env['image_elf'] = env['vmlinux']
             if env['_args_given']['linux_exec']:
                 env['image'] = env['linux_exec']
-        if env['emulator'] == 'gem5':
-            if env['ramfs']:
-                env['disk_image'] = None
+        if not env['_args_given']['disk_image']:
+            if env['emulator'] == 'gem5':
+                if env['ramfs']:
+                    env['disk_image'] = None
+                else:
+                    env['disk_image'] = env['rootfs_raw_file']
             else:
-                env['disk_image'] = env['rootfs_raw_file']
-        else:
-            env['disk_image'] = env['qcow2_file']
+                env['disk_image'] = env['qcow2_file']
+        # A squahfs of 'out_rootfs_overlay_dir'.
+        env['disk_image_2'] = env['out_rootfs_overlay_dir'] + '.squashfs'
 
         # Android
         if not env['_args_given']['android_base_dir']:
@@ -1224,8 +1248,11 @@ lunch aosp_{}-eng
 '''.format(self.env['android_arch'])
 
         # Toolchain.
-        if env['baremetal'] and not env['_args_given']['mode']:
-            env['mode'] = 'baremetal'
+        if not env['_args_given']['mode']:
+            if env['baremetal']:
+                env['mode'] = 'baremetal'
+            if env['userland']:
+                env['mode'] = 'userland'
         if not env['_args_given']['gcc_which']:
             if env['mode'] == 'baremetal':
                 env['gcc_which'] = 'crosstool-ng'
@@ -1333,6 +1360,10 @@ lunch aosp_{}-eng
         Get the magic gem5 target path form the meaningful component name.
         '''
         return os.path.join(env['gem5_executable_dir'], name + env['gem5_executable_suffix'])
+
+    @staticmethod
+    def cwd_in_lib():
+        return pathlib.Path(common.consts['userland_source_libs_dir']) in pathlib.Path(os.getcwd()).parents
 
     def gem5_list_checkpoint_dirs(self):
         '''
@@ -1444,7 +1475,7 @@ lunch aosp_{}-eng
         '''
         Run timed_main across all selected archs and emulators.
 
-        :return: if any of the timed_mains exits non-zero and non-null,
+        :return: if any of the timed_mains exits non-zero and non-None,
                  return that. Otherwise, return 0.
         '''
         env = kwargs.copy()
@@ -1476,17 +1507,6 @@ lunch aosp_{}-eng
                         arch = env['arch_short_to_long_dict'][arch]
                     if emulator in env['emulator_short_to_long_dict']:
                         emulator = env['emulator_short_to_long_dict'][emulator]
-                    if emulator == 'native':
-                        if arch != env['host_arch']:
-                            if real_all_archs:
-                                continue
-                            else:
-                                raise Exception('native emulator only supported in if target arch == host arch')
-                        if env['userland'] and not env['mode'] == 'userland':
-                            if real_all_emulators:
-                                continue
-                            else:
-                                raise Exception('native emulator only supported in user mode')
                     if self.is_arch_supported(arch, env['mode']):
                         if not env['dry_run']:
                             start_time = time.time()
@@ -1505,6 +1525,17 @@ lunch aosp_{}-eng
                             quiet=(not show_cmds),
                         )
                         self._init_env(self.env)
+                        if emulator == 'native':
+                            if arch != self.env['host_arch']:
+                                if real_all_archs:
+                                    continue
+                                else:
+                                    raise Exception('native emulator only supported in if target arch ({}) == host arch ({})'.format(arch, self.env['host_arch']))
+                            if self.env['userland'] and not self.env['mode'] == 'userland':
+                                if real_all_emulators:
+                                    continue
+                                else:
+                                    raise Exception('native emulator only supported in user mode')
                         self.setup_one()
                         ret = self.timed_main()
                         if not env['dry_run']:
@@ -1740,6 +1771,12 @@ class BuildCliFunction(LkmcCliFunction):
 Pass the given compiler flags to all languages (C, C++, Fortran, etc.)
 ''',
             },
+            '--ldflags': {
+                'default': '',
+                'help': '''\
+Extra linker flags.
+''',
+            },
             '--configure': {
                 'default': True,
                 'help': '''\
@@ -1866,14 +1903,15 @@ after configure, e.g. SCons. Usually contains specific targets or other build fl
                             '-march={}'.format(self.env['march']), LF,
                         ])
                 if dirpath_relative_root_components_len > 0:
-                    if dirpath_relative_root_components[0] == 'userland':
+                    if dirpath_relative_root_components[0] == consts['userland_subdir']:
                         if dirpath_relative_root_components_len > 1:
-                            if dirpath_relative_root_components[1] == 'libs':
+                            if dirpath_relative_root_components[1] == self.env['userland_libs_basename']:
                                 if dirpath_relative_root_components_len > 1:
                                     if self.env['gcc_which'] == 'host':
                                         eigen_root = '/'
                                     else:
                                         eigen_root = self.env['buildroot_staging_dir']
+                                    # TODO move to path_properties.py somehow.
                                     packages = {
                                         'boost': {
                                             # Header only, no pkg-config package.
@@ -1901,6 +1939,17 @@ after configure, e.g. SCons. Usually contains specific targets or other build fl
                                         'hdf5': {
                                             'pkg_config_id': 'hdf5-serial',
                                         },
+                                        'googletest': {
+                                            'cc_flags': [
+                                                '-I', os.path.join(self.env['googletest_source_dir'], 'googletest', 'include'), LF,
+                                                '-I', os.path.join(self.env['googletest_source_dir'], 'googlemock', 'include'), LF,
+                                            ],
+                                            'cc_flags_after': [
+                                                os.path.join(self.env['googletest_source_dir'], 'build', 'lib', 'libgtest.a'), LF,
+                                                os.path.join(self.env['googletest_source_dir'], 'build', 'lib', 'libgtest_main.a'), LF,
+                                                os.path.join(self.env['googletest_source_dir'], 'build', 'lib', 'libgmock.a'), LF,
+                                            ],
+                                        },
                                     }
                                     package_key = dirpath_relative_root_components[2]
                                     if package_key in packages:
@@ -1921,7 +1970,7 @@ after configure, e.g. SCons. Usually contains specific targets or other build fl
                                         ]).decode()
                                         cc_flags.extend(self.sh.shlex_split(pkg_config_output))
                                     if 'cc_flags_after' in package:
-                                        cc_flags.extend(package['cc_flags_after'])
+                                        cc_flags_after.extend(package['cc_flags_after'])
                                     else:
                                         pkg_config_output = subprocess.check_output([
                                             self.env['pkg_config'],
@@ -1948,10 +1997,18 @@ after configure, e.g. SCons. Usually contains specific targets or other build fl
                 )
         return ret
 
+    def clean_pre(self, build_dir):
+        pass
+
     def clean(self):
         build_dir = self.get_build_dir()
+        self.clean_pre(build_dir)
         if build_dir is not None:
             self.sh.rmrf(build_dir)
+        self.clean_post(build_dir)
+
+    def clean_post(self, build_dir):
+        pass
 
     def build(self):
         '''

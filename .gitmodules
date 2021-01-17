@@ -11,15 +11,21 @@
 [submodule "submodules/crosstool-ng"]
 	path = submodules/crosstool-ng
 	url = https://github.com/cirosantilli/crosstool-ng
-[submodule "submodules/dhrystone"]
-	path = submodules/dhrystone
-	url = https://github.com/cirosantilli/dhrystone
+[submodule "submodules/freebsd"]
+	path = submodules/freebsd
+	url = https://github.com/cirosantilli/freebsd
 [submodule "submodules/gcc"]
 	path = submodules/gcc
 	url = https://github.com/cirosantilli/gcc
 [submodule "submodules/gem5"]
 	path = submodules/gem5
 	url = https://github.com/cirosantilli/gem5
+[submodule "submodules/gem5-resources"]
+	path = submodules/gem5-resources
+	url = https://gem5.googlesource.com/public/gem5-resources
+[submodule "submodules/gensim"]
+	path = submodules/gensim
+	url = https://github.com/cirosantilli/gensim
 [submodule "submodules/glibc"]
 	path = submodules/glibc
 	url = https://github.com/cirosantilli/glibc
@@ -27,24 +33,15 @@
 # git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
 # But git clone --branch --depth 1 worked weirdly:
 # https://unix.stackexchange.com/questions/338578/linux-kernel-source-code-size-difference
+[submodule "submodules/googletest"]
+	path = submodules/googletest
+	url = https://github.com/cirosantilli/googletest
 [submodule "submodules/linux"]
 	path = submodules/linux
 	url = https://github.com/cirosantilli/linux
-[submodule "submodules/lmbench"]
-	path = submodules/lmbench
-	url = https://github.com/cirosantilli/lmbench
-[submodule "submodules/omp-validation"]
-	path = submodules/omp-validation
-	url = https://github.com/cirosantilli/omp-validation
-[submodule "submodules/parsec-benchmark"]
-	path = submodules/parsec-benchmark
-	url = https://github.com/cirosantilli/parsec-benchmark
 [submodule "submodules/qemu"]
 	path = submodules/qemu
 	url = https://github.com/cirosantilli/qemu
 [submodule "submodules/xen"]
 	path = submodules/xen
 	url = https://github.com/cirosantilli/xen
-[submodule "submodules/stream-benchmark"]
-	path = submodules/stream-benchmark
-	url = https://github.com/cirosantilli/stream-benchmark

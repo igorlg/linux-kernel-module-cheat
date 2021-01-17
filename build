@@ -34,7 +34,6 @@ class _Component:
         apt_build_deps=None,
         submodules=None,
         submodules_shallow=None,
-        python2_pkgs=None,
         python3_pkgs=None,
         ruby_pkgs=None,
     ):
@@ -45,7 +44,6 @@ class _Component:
         self.apt_build_deps = apt_build_deps or set()
         self.submodules = submodules or set()
         self.submodules_shallow = submodules_shallow or set()
-        self.python2_pkgs = python2_pkgs or set()
         self.python3_pkgs = python3_pkgs or set()
         self.ruby_pkgs = ruby_pkgs or set()
 
@@ -54,7 +52,10 @@ class _Component:
             (self.build_callback is not None) and
             (self.supported_archs is None or arch in self.supported_archs)
         ):
-            self.build_callback()
+            return self.build_callback()
+        else:
+            # Component that does not build anything itself, only has dependencies.
+            return 0
 
 submodule_extra_remotes = {
     'binutils-gdb': {
@@ -65,6 +66,9 @@ submodule_extra_remotes = {
     },
     'crosstool-ng': {
         'up': 'https://github.com/crosstool-ng/crosstool-ng',
+    },
+    'freebsd': {
+        'up': 'https://github.com/freebsd/freebsd',
     },
     'gcc': {
         'up': 'git://gcc.gnu.org/git/gcc.git',
@@ -168,12 +172,15 @@ so looping over all of them would waste time.
                 'make',
                 'patch',
                 'perl',
-                'python-matplotlib',
                 'python3',
                 'rsync',
                 'sed',
                 'tar',
                 'unzip',
+            },
+            python3_pkgs={
+                # Generate graphs of config.ini under m5out.
+                'matplotlib',
             },
         )
         buildroot_overlay_qemu_component = copy.copy(buildroot_component)
@@ -182,24 +189,39 @@ so looping over all of them would waste time.
         buildroot_overlay_gem5_component = copy.copy(buildroot_component)
         buildroot_overlay_gem5_component.dependencies = ['overlay-gem5']
         gem5_deps = {
-            # TODO test it out on Docker and answer that question properly:
-            # https://askubuntu.com/questions/350475/how-can-i-install-gem5
             'apt_get_pkgs': {
-                'device-tree-compiler',
-                'diod',
-                'libgoogle-perftools-dev',
+                # https://askubuntu.com/questions/350475/how-can-i-install-gem5/1275773#1275773
+                'build-essential',
+                'doxygen',
+                'git',
                 'libboost-all-dev',
+                'libelf-dev',
+                'libgoogle-perftools-dev',
+                'libhdf5-serial-dev',
+                'libpng-dev',
+                'libprotobuf-dev',
+                'libprotoc-dev',
+                'lld',
                 'm4',
                 'protobuf-compiler',
-                'python-dev',
-                'python-pip',
+                'python-is-python3',
+                'python3-dev',
+                'python3-pydot',
+                'python3-six',
+                'scons',
+                'zlib1g',
+                'zlib1g-dev',
+
+                # Some extra ones.
+                'device-tree-compiler',
+                'diod',
                 # For prebuilt qcow2 unpack.
                 'qemu-utils',
-                'scons',
-                'zlib1g-dev',
+                # Otherwise HDF5 not found.
+                'pkg-config',
             },
-            'python2_pkgs': {
-                # Generate graphs of config.ini under m5out.
+            'python3_pkgs': {
+                # https://cirosantilli.com/linux-kernel-module-cheat#gem5-config-dot
                 'pydot',
             },
             'submodules_shallow': {'gem5'},
@@ -261,7 +283,7 @@ so looping over all of them would waste time.
                     'libncurses5-dev',
                     'libtool-bin',
                     'make',
-                    'python-dev',
+                    'python3-dev',
                     'texinfo',
                 },
                 submodules_shallow={'crosstool-ng'},
@@ -406,7 +428,7 @@ https://cirosantilli.com/linux-kernel-module-cheat#supported-hosts
 '''
         )
         self.add_argument(
-            '--download-dependencies',
+            '-D', '--download-dependencies',
             default=False,
             help='''\
 Also download all dependencies required for a given build: Ubuntu packages,
@@ -446,7 +468,7 @@ Which components to build. Default: qemu-buildroot
             args = self.get_common_args()
             args.update(extra_args)
             args['show_time'] = False
-            lkmc.import_path.import_path_main(component_file)(**args)
+            return lkmc.import_path.import_path_main(component_file)(**args)
         return f
 
     def timed_main(self):
@@ -475,6 +497,7 @@ Which components to build. Default: qemu-buildroot
                 'moreutils', # ts
                 'python3-pip',
                 'rr',
+                'squashfs-tools',
                 'tmux',
                 'vinagre',
                 'wget',
@@ -495,7 +518,6 @@ Which components to build. Default: qemu-buildroot
             apt_build_deps = set()
             submodules = set()
             submodules_shallow = set()
-            python2_pkgs = set()
             python3_pkgs = {
                 'pexpect==4.6.0',
             }
@@ -505,12 +527,13 @@ Which components to build. Default: qemu-buildroot
                 apt_build_deps.update(component.apt_build_deps)
                 submodules.update(component.submodules)
                 submodules_shallow.update(component.submodules_shallow)
-                python2_pkgs.update(component.python2_pkgs)
                 python3_pkgs.update(component.python3_pkgs)
                 python3_pkgs.update(component.python3_pkgs)
                 ruby_pkgs.update(component.ruby_pkgs)
             if ruby_pkgs:
                 apt_get_pkgs.add('ruby')
+            if python3_pkgs:
+                apt_get_pkgs.add('python3-pip')
             if apt_get_pkgs or apt_build_deps:
                 if self.env['travis']:
                     interacive_pkgs = {
@@ -549,11 +572,6 @@ Which components to build. Default: qemu-buildroot
                             ['apt-get', 'build-dep'] + y + [LF] +
                             self.sh.add_newlines(sorted(apt_build_deps))
                         )
-            if python2_pkgs:
-                self.sh.run_cmd(
-                    ['python', '-m', 'pip', 'install', '--user', LF] +
-                    self.sh.add_newlines(sorted(python2_pkgs))
-                )
             if python3_pkgs:
                 # Not with pip executable directly:
                 # https://stackoverflow.com/questions/49836676/error-after-upgrading-pip-cannot-import-name-main/51846054#51846054
@@ -561,7 +579,7 @@ Which components to build. Default: qemu-buildroot
                     ['python3', '-m', 'pip', 'install', '--user', LF] +
                     self.sh.add_newlines(sorted(python3_pkgs))
                 )
-            self.sh.run_cmd(['python3', '-m', 'pip', 'install', '-r', 'requirements.txt', LF])
+            self.sh.run_cmd(['python3', '-m', 'pip', 'install', '-r', 'requirements.txt', '--user', LF])
             if ruby_pkgs:
                 # The right thing to do would be to use RVM and avoid sudo,
                 # but we felt it was too much boilerplate for now.
@@ -653,7 +671,9 @@ Which components to build. Default: qemu-buildroot
             if self.env['print_components']:
                 print(self.component_to_name_map[component])
             else:
-                component.build(self.env['arch'])
+                ret = component.build(self.env['arch'])
+                if (ret != 0):
+                    return ret
 
 if __name__ == '__main__':
     Main().cli()

@@ -20,7 +20,25 @@ TL;DR: xref:qemu-buildroot-setup-getting-started[xrefstyle=full]
 
 The source code for this page is located at: https://github.com/cirosantilli/linux-kernel-module-cheat[]. Due to https://github.com/isaacs/github/issues/1610[a GitHub limitation], this README is too long and not fully rendered on github.com, so either use: https://cirosantilli.com/linux-kernel-module-cheat or <<build-the-documentation,build the docs yourself>>.
 
+image::https://raw.githubusercontent.com/cirosantilli/china-dictatorship-media/master/Xinjiang_prisoners_sitting_identified.jpeg[width=800]
+
 toc::[]
+
+== `--china`
+
+The most important functionality of this repository is the `--china` option, sample usage:
+
+....
+./setup
+./run --china > index.html
+firefox index.html
+....
+
+see also: https://cirosantilli.com/china-dictatorship/#mirrors
+
+The secondary systems programming functionality is described on the sections below starting from <<getting-started>>.
+
+image::https://raw.githubusercontent.com/cirosantilli/china-dictatorship-media/master/Tiananmen_cute_girls.jpg[width=800]
 
 == Getting started
 
@@ -91,6 +109,7 @@ Reserve 12Gb of disk and run:
 ....
 git clone https://github.com/cirosantilli/linux-kernel-module-cheat
 cd linux-kernel-module-cheat
+./setup
 ./build --download-dependencies qemu-buildroot
 ./run
 ....
@@ -146,6 +165,7 @@ All available modules can be found in the link:kernel_modules[] directory.
 It is super easy to build for different <<cpu-architecture,CPU architectures>>, just use the `--arch` option:
 
 ....
+./setup
 ./build --arch aarch64 --download-dependencies qemu-buildroot
 ./run --arch aarch64
 ....
@@ -628,6 +648,7 @@ For the most part, if you just add the `--emulator gem5` option or `*-gem5` suff
 If you haven't built Buildroot yet for <<qemu-buildroot-setup>>, you can build from the beginning with:
 
 ....
+./setup
 ./build --download-dependencies gem5-buildroot
 ./run --emulator gem5
 ....
@@ -695,7 +716,7 @@ For example, to do a <<qemu-buildroot-setup>> inside Docker, run:
 sudo apt-get install docker
 ./run-docker create && \
 ./run-docker sh -- ./build --download-dependencies qemu-buildroot
-./run-docker sh
+./run-docker
 ....
 
 You are now left inside a shell in the Docker! From there, just run as usual:
@@ -723,7 +744,7 @@ and the image shows under:
 ....
 docker images
 ....
-* `./run-docker sh`: open a shell on the container.
+* `./run-docker`: open a shell on the container.
 +
 If it has not been started previously, start it. This can also be done explicitly with:
 +
@@ -750,7 +771,7 @@ To actually delete the Docker build, run on host:
 To use <<gdb>> from inside Docker, you need a second shell inside the container. You can either do that from another shell with:
 
 ....
-./run-docker sh
+./run-docker
 ....
 
 or even better, by starting a <<tmux>> session inside the container. We install `tmux` by default in the container.
@@ -843,6 +864,7 @@ Or to run a baremetal example instead:
 Be saner and use our custom built QEMU instead:
 
 ....
+./setup
 ./build --download-dependencies qemu
 ./run
 ....
@@ -1099,6 +1121,7 @@ You can install those libraries with:
 
 ....
 cd linux-kernel-module-cheat
+./setup
 ./build --download-dependencies userland-host
 ....
 
@@ -1277,6 +1300,7 @@ Every `.c` file inside link:baremetal/[] and `.S` file inside `baremetal/arch/<a
 For example, to run link:baremetal/arch/aarch64/dump_regs.c[] in QEMU do:
 
 ....
+./setup
 ./build --arch aarch64 --download-dependencies qemu-baremetal
 ./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c
 ....
@@ -1360,6 +1384,7 @@ You can run all the baremetal examples in one go and check that all assertions p
 To use gem5 instead of QEMU do:
 
 ....
+./setup
 ./build --download-dependencies gem5-baremetal
 ./run --arch aarch64 --baremetal userland/c/hello.c --emulator gem5
 ....
@@ -1437,6 +1462,7 @@ For development, you will want to do a more controlled build with extra error ch
 For the initial build do:
 
 ....
+./setup
 ./build --download-dependencies docs
 ....
 
@@ -3925,7 +3951,7 @@ Then, from inside that image:
 sudo apt-get install git
 git clone https://github.com/cirosantilli/linux-kernel-module-cheat
 cd linux-kernel-module-cheat
-sudo ./setup -y
+./setup -y
 ....
 
 and then proceed exactly as in <<prebuilt>>.
@@ -4013,6 +4039,23 @@ If you modify the userland programs, rebuild simply with:
 ....
 ./build-userland
 ....
+
+To rebuild just QEMU userland if you hack it, use:
+
+....
+./build-qemu --mode userland
+....
+
+The:
+
+....
+--mode userland
+....
+
+is needed because QEMU has two separate executables:
+
+* `qemu-x86_64` for userland
+* `qemu-system-x86_64` for full system
 
 ==== User mode GDB
 
@@ -10970,62 +11013,33 @@ By comparing the terminal output of both runs, we can see that they are the exac
 * timestamps of dmesg output
 * <<rand-check-out>> output
 
-The record and replay feature was revived around QEMU v3.0.0. It existed earlier but it rot completely. As of v3.0.0 it is still flaky: sometimes we get deadlocks, and only a limited number of command line arguments are supported.
+The record and replay feature was revived around QEMU v3.0.0. In v5.2.0 it is quite usable, almost all peripherals and vCPUs are supported.
 
-Documented at: https://github.com/qemu/qemu/blob/v2.12.0/docs/replay.txt
+Documented at: https://github.com/qemu/qemu/blob/v5.2.0/docs/replay.txt
 
-TODO: using `-r` as above leads to a kernel warning:
-
-....
-rcu_sched detected stalls on CPUs/tasks
-....
-
-TODO: replay deadlocks intermittently at disk operations, last kernel message:
-
-....
-EXT4-fs (sda): re-mounted. Opts: block_validity,barrier,user_xattr
-....
-
-TODO replay with network gets stuck:
+replay may be used with with network:
 
 ....
 ./qemu-rr --eval-after 'ifup -a;wget -S google.com;./linux/poweroff.out;'
 ....
 
-after the message:
+`arm` and `aarch64` targets can also be used with rr:
 
 ....
-adding dns 10.0.2.3
+./qemu-rr --arch aarch64 --eval-after './linux/rand_check.out;./linux/poweroff.out;'
+./qemu-rr --arch aarch64 --eval-after 'ifup -a;wget -S google.com;./linux/poweroff.out;'
 ....
 
-There is explicit network support on the QEMU patches, but either it is buggy or we are not using the correct magic options.
-
-Solved on unmerged c42634d8e3428cfa60672c3ba89cabefc720cde9 from https://github.com/ispras/qemu/tree/rr-180725
-
-TODO `arm` and `aarch64` only seem to work with initrd since I cannot plug a working IDE disk device? See also: https://lists.gnu.org/archive/html/qemu-devel/2018-02/msg05245.html
-
-Then, when I tried with <<initrd>> and no disk:
+Replay also supports <<initrd>> and no disk:
 
 ....
 ./build-buildroot --arch aarch64 --initrd
 ./qemu-rr --arch aarch64 --eval-after './linux/rand_check.out;./linux/poweroff.out;' --initrd
 ....
 
-QEMU crashes with:
-
-....
-ERROR:replay/replay-time.c:49:replay_read_clock: assertion failed: (replay_file && replay_mutex_locked())
-....
-
-I had the same error previously on x86-64, but it was fixed: https://bugs.launchpad.net/qemu/+bug/1762179 so maybe the forgot to fix it for `aarch64`?
-
-Solved on unmerged c42634d8e3428cfa60672c3ba89cabefc720cde9 from https://github.com/ispras/qemu/tree/rr-180725
-
 ===== QEMU reverse debugging
 
-TODO get working.
-
-QEMU replays support checkpointing, and this allows for a simplistic "reverse debugging" implementation proposed at https://lists.gnu.org/archive/html/qemu-devel/2018-06/msg00478.html on the unmerged https://github.com/ispras/qemu/tree/rr-180725[]:
+QEMU replays support checkpointing, and this allows for a simplistic "reverse debugging" implementation since v5.2.0:
 
 ....
 ./run --eval-after './linux/rand_check.out;./linux/poweroff.out;' --record
@@ -11049,6 +11063,8 @@ reverse-continue
 ....
 
 and we are back at `start_kernel`
+
+`reverse-continue` proceeds to the latest of the earlier breakpoints or to the very beginning if there were no breakpoints before.
 
 ==== QEMU trace multicore
 
@@ -19190,6 +19206,12 @@ gem5 uses a ton of code generation, which makes the project horrendous:
 * .isa code which describes most of the instructions: <<gem5-instruction-definitions>>
 * <<gem5-ruby-build,Ruby>> for memory systems
 
+To find files that are not symlinks use https://stackoverflow.com/questions/16303449/how-to-find-files-excluding-symbolic-links
+
+....
+find build -type f
+....
+
 To find the definition of generated code, do a:
 
 ....
@@ -19315,9 +19337,9 @@ Value items[TheISA::PageBytes];
 
 which is defined at:
 
-...
+....
 build/ARM/config/the_isa.hh
-...
+....
 
 as:
 
@@ -19358,7 +19380,7 @@ The horrendous downsides of this are:
 
 https://gensim.org
 
-https://bitbucket.org/gensim/gensim
+Source at: https://github.com/gensim-project/gensim previously at: https://bitbucket.org/gensim/gensim
 
 MIT licensed <<binary-translation>> simulator, so a bit like an MIT <<qemu>>.
 
@@ -20931,6 +20953,8 @@ Maybe some day someone will use this setup to study the performance of interpret
 
 ==== Python
 
+link:rootfs_overlay/lkmc/python[]
+
 Examples:
 
 * link:rootfs_overlay/lkmc/python/hello.py[]: hello world
@@ -21090,6 +21114,8 @@ pybind11 is amazingly easy to use. But it can also make your builds really slow:
 
 ==== Node.js
 
+link:rootfs_overlay/lkmc/nodejs[]
+
 Host installation shown at: https://askubuntu.com/questions/594656/how-to-install-the-latest-versions-of-nodejs-and-npm/971612#971612
 
 Build and install the interpreter in Buildroot with:
@@ -21119,7 +21145,9 @@ Examples:
 * `class`
 ** link:rootfs_overlay/lkmc/nodejs/object_to_string.js[]: `util.inspect.custom` and `toString` override experiment: https://stackoverflow.com/questions/24902061/is-there-an-repr-equivalent-for-javascript/26698403#26698403
 ** link:rootfs_overlay/lkmc/nodejs/object_to_json.js[]: `toJSON` examples
+** link:rootfs_overlay/lkmc/nodejs/static.js[]
 * link:rootfs_overlay/lkmc/nodejs/http.js[]: `http` module to create a simple HTTP server: https://nodejs.org/api/http.html
+* link:rootfs_overlay/lkmc/nodejs/esm[]: https://stackoverflow.com/questions/58384179/syntaxerror-cannot-use-import-statement-outside-a-module
 
 ===== Node.js step debugging
 
@@ -21175,6 +21203,8 @@ Illustrates how to add extra non-code data files to an NPM package, and then use
 https://stackoverflow.com/questions/31642477/how-to-publish-a-npm-package-with-distribution-files/59407033#59407033
 
 ==== Java
+
+link:rootfs_overlay/lkmc/java[]
 
 No OpenJDK package as of 2018.08: https://stackoverflow.com/questions/28874150/buildroot-with-jamvm-2-0-for-java-8/59290927#59290927 partly because their build system is shit like the rest of the project's setup.
 
@@ -25654,6 +25684,8 @@ TODO create a minimal working aarch64 example analogous to the x86 one at: https
 
 A general introduction to paging with x86 examples can be found at: https://cirosantilli.com/x86-paging[].
 
+Then, this article is amazing: https://www.starlab.io/blog/deep-dive-mmu-virtualization-with-xen-on-arm
+
 ARM paging is documented at <<armarm8-db>> Chapter D5 and is mostly called VMSAv8 in the ARMv8 manual (Virtual Memory System Architecture).
 
 Paging is enabled by the `SCTLR_EL1.M` bit.
@@ -27591,6 +27623,7 @@ For other Linux distros, everything will likely also just work if you install th
 Find out the packages that we install with:
 
 ....
+cat ./setup
 ./build --download-dependencies --dry-run <some-target> | less
 ....
 

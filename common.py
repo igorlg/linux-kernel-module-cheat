@@ -28,11 +28,9 @@ import urllib
 import urllib.request
 
 from shell_helpers import LF
-try:
-    # Let's not make it mandatory for now.
-    import china_dictatorship
-except ImportError:
-    pass
+# https://cirosantilli.com/china-dictatorship/#mirrors
+import china_dictatorship
+assert "Tiananmen Square protests" in china_dictatorship.get_data()
 import cli_function
 import path_properties
 import shell_helpers
@@ -43,7 +41,7 @@ common = sys.modules[__name__]
 # Fixed parameters that don't depend on CLI arguments.
 consts = {}
 consts['repo_short_id'] = 'lkmc'
-consts['linux_kernel_version'] = '5.9.1'
+consts['linux_kernel_version'] = '5.9.2'
 # https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
 consts['in_docker'] = os.path.exists('/.dockerenv')
 consts['root_dir'] = os.path.dirname(os.path.abspath(__file__))
@@ -243,7 +241,7 @@ Enable or disable ccache: https://cirosantilli.com/linux-kernel-module-cheat#cca
             '--china',
             default=False,
             help='''\
-To have some fun when the kernel starts to beat you.
+https://cirosantilli.com/linux-kernel-module-cheat#china
 '''
         )
         self.add_argument(
@@ -930,6 +928,8 @@ Incompatible archs are skipped.
         env['gem5_m5_source_dir'] = join(env['gem5_source_dir'], 'util', 'm5')
         if self.env['arch'] == 'x86_64':
             env['gem5_m5_source_dir_build_arch'] = 'x86'
+        elif self.env['arch'] == 'aarch64':
+            env['gem5_m5_source_dir_build_arch'] = 'arm64'
         else:
             env['gem5_m5_source_dir_build_arch'] = env['arch']
         env['gem5_m5_source_dir_build'] = join(env['gem5_m5_source_dir'], 'build', env['gem5_m5_source_dir_build_arch'], 'out', 'm5')
